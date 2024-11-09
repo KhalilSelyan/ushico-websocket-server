@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -267,10 +268,16 @@ func main() {
 	// Start the message handling goroutine.
 	go handleMessages()
 
+	// Read the port from the environment variable, default to 8080 if not set.
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8085"
+	}
+	addr := ":" + port
+
 	// Start the HTTP server.
-	port := ":8080"
-	fmt.Printf("WebSocket server starting on %s\n", port)
-	err := http.ListenAndServe(port, nil)
+	fmt.Printf("WebSocket server starting on %s\n", addr)
+	err := http.ListenAndServe(addr, nil)
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
 	}

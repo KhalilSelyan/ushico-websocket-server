@@ -14,8 +14,8 @@ COPY . .
 # Build the Go application
 RUN go build -o ushico-websocket-server .
 
-# Expose the port your application listens on (e.g., 8080)
-EXPOSE 8080
+# Expose the port your application listens on (e.g., 8085)
+EXPOSE 8085
 
 # Set environment variables if needed (optional)
 # ENV ENVIRONMENT=production
