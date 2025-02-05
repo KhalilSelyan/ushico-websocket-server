@@ -20,12 +20,16 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 }
 
+type IdentifyData struct {
+	UserID string `json:"userId"`
+}
+
 // Client represents a connected WebSocket client.
 type Client struct {
-	conn     *websocket.Conn // The WebSocket connection.
-	channels map[string]bool // The channels the client is subscribed to.
-	mu       sync.Mutex      // Mutex to protect the channels map.
-	// userID   string          // Add userID to identify the client
+	conn     *websocket.Conn            // The WebSocket connection.
+	channels map[string]map[string]bool // Map of channels to events.
+	mu       sync.Mutex                 // Mutex to protect the channels map.
+	userID   string                     // Add userID to identify the client
 }
 
 // Message represents the structure of messages sent over WebSocket.
@@ -33,6 +37,7 @@ type Message struct {
 	Channel string          `json:"channel"` // The channel identifier.
 	Event   string          `json:"event"`   // The event type (e.g., "sync", "subscribe").
 	Data    json.RawMessage `json:"data"`    // The raw message data.
+	UserID  string          `json:"userId"`
 }
 
 // SyncData represents the synchronization data for video playback.
@@ -52,33 +57,52 @@ var (
 	mutex      = &sync.RWMutex{}        // Read-write mutex to protect the clients map.
 )
 
-// Subscribe adds the client to the specified channel.
-func (c *Client) subscribe(channel string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.channels[channel] = true
-	log.Printf("Client subscribed to channel: %s", channel)
+// Add a debug log function
+func debugLog(format string, v ...interface{}) {
+	log.Printf("[DEBUG] "+format, v...)
 }
 
-// Unsubscribe removes the client from the specified channel.
-func (c *Client) unsubscribe(channel string) {
+func (c *Client) subscribe(channel string, event string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.channels, channel)
-	log.Printf("Client unsubscribed from channel: %s", channel)
+	if c.channels[channel] == nil {
+		c.channels[channel] = make(map[string]bool)
+	}
+	c.channels[channel][event] = true
+	debugLog("Client %s subscribed to channel: %s, event: %s", c.userID, channel, event)
 }
 
-// isSubscribed checks if the client is subscribed to the specified channel.
-func (c *Client) isSubscribed(channel string) bool {
+func (c *Client) unsubscribe(channel string, event string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.channels[channel]
+	if c.channels[channel] != nil {
+		delete(c.channels[channel], event)
+		if len(c.channels[channel]) == 0 {
+			delete(c.channels, channel)
+		}
+		debugLog("Client %s unsubscribed from channel: %s, event: %s", c.userID, channel, event)
+	}
 }
 
-// validateChatID checks if the chat ID is in the expected format (e.g., "user1--user2").
-func validateChatID(chatID string) bool {
-	parts := strings.Split(chatID, "--")
-	return len(parts) == 2 && len(parts[0]) > 0 && len(parts[1]) > 0
+func (c *Client) isSubscribed(channel string, event string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	debugLog("Checking subscription for client %s: channel=%s, event=%s",
+		c.userID, channel, event)
+
+	if events, ok := c.channels[channel]; ok {
+		if strings.HasPrefix(channel, "sync-") {
+			isSubscribed := events[event]
+			debugLog("Client %s subscription to %s:%s = %v",
+				c.userID, channel, event, isSubscribed)
+			return isSubscribed
+		}
+		debugLog("Client %s has events for channel %s: %v",
+			c.userID, channel, events)
+		return true
+	}
+	debugLog("Client %s not subscribed to channel %s", c.userID, channel)
+	return false
 }
 
 // handleClient manages the connection for an individual client.
@@ -111,53 +135,57 @@ func handleClient(client *Client) {
 			break
 		}
 
-		log.Printf("Received message: %+v", message)
+		// Handle system messages first
+		if message.Channel == "system" && message.Event == "identify" {
+			var identifyData IdentifyData
+			if err := json.Unmarshal(message.Data, &identifyData); err != nil {
+				debugLog("Error parsing identify data: %v", err)
+				continue
+			}
+			client.userID = identifyData.UserID
+			debugLog("Client identified with userID: %s", client.userID)
+			continue
+		}
+
+		// Ensure userId is set from message if not already set
+		if client.userID == "" && message.UserID != "" {
+			client.userID = message.UserID
+			debugLog("Set client userID from message: %s", client.userID)
+		}
+
+		debugLog("Received message from %s: Channel=%s, Event=%s",
+			client.userID, message.Channel, message.Event)
 
 		// Handle messages based on the Event field.
 		switch message.Event {
 		case "subscribe":
-			log.Printf("Handling subscribe event for channel: %s", message.Channel)
-			client.subscribe(message.Channel)
-		case "unsubscribe":
-			log.Printf("Handling unsubscribe event for channel: %s", message.Channel)
-			client.unsubscribe(message.Channel)
+			var data struct {
+				Event string `json:"event"`
+			}
+			if err := json.Unmarshal(message.Data, &data); err != nil {
+				debugLog("Error parsing subscribe data: %v", err)
+				continue
+			}
+			client.subscribe(message.Channel, data.Event)
+			debugLog("Client %s subscribed to %s:%s", client.userID, message.Channel, data.Event)
+
 		case "sync":
-			log.Printf("Handling sync event for channel: %s", message.Channel)
-			// Validate chat ID format.
-			chatID := strings.TrimPrefix(message.Channel, "sync-")
-			if !validateChatID(chatID) {
-				log.Printf("Invalid chat ID format: %s", chatID)
+			if !strings.HasPrefix(message.Channel, "sync-") {
+				debugLog("Invalid sync channel format: %s", message.Channel)
 				continue
 			}
-			// Parse sync data.
-			var syncData SyncData
-			if err := json.Unmarshal(message.Data, &syncData); err != nil {
-				log.Printf("Error parsing sync data: %v", err)
-				continue
-			}
-			// Log the sync message details.
-			log.Printf("Broadcasting sync message - Time: %.2f, State: %s", syncData.Timestamp, syncData.State)
-			// Broadcast the original message.
+			debugLog("Broadcasting sync from %s on channel %s", client.userID, message.Channel)
 			broadcast <- message
-		case "incoming_message", "new_message", "new_friend", "incoming_friend_request", "friend_request_denied", "friend_request_accepted":
-			log.Printf("Handling %s event for channel: %s", message.Event, message.Channel)
-			// Broadcast the message to clients subscribed to the channel
-			broadcast <- message
+
 		default:
-			log.Printf("Unknown event type: %s", message.Event)
+			debugLog("Broadcasting message from %s: %s:%s", client.userID, message.Channel, message.Event)
+			broadcast <- message
 		}
 	}
 }
 
 // handleConnections upgrades the HTTP connection to a WebSocket and registers the client.
 func handleConnections(w http.ResponseWriter, r *http.Request) {
-	// Extract userID from query parameters (or headers)
-	// userID := r.URL.Query().Get("userID")
-	// if userID == "" {
-	// 	http.Error(w, "Unauthorized", http.StatusUnauthorized)
-	// 	return
-	// }
-
 	// Upgrade the HTTP connection to a WebSocket connection.
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -168,8 +196,7 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	// Create a new client.
 	client := &Client{
 		conn:     conn,
-		channels: make(map[string]bool),
-		// userID:   userID,
+		channels: make(map[string]map[string]bool), // Updated to match the expected type
 	}
 
 	log.Printf("New client connected from: %s", conn.RemoteAddr())
@@ -183,77 +210,59 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 
 // handleMessages processes incoming messages and broadcasts them to subscribed clients.
 func handleMessages() {
-	// Setup a ticker to send ping messages for keep-alive.
 	ticker := time.NewTicker(54 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case client := <-register:
-			// Register a new client.
-			log.Printf("New client registered from: %s", client.conn.RemoteAddr())
 			mutex.Lock()
 			clients[client] = true
+			debugLog("New client registered: %s", client.userID)
 			mutex.Unlock()
 
 		case client := <-unregister:
-			// Unregister a client.
-			log.Printf("Client unregistered from: %s", client.conn.RemoteAddr())
 			mutex.Lock()
 			if _, ok := clients[client]; ok {
 				delete(clients, client)
-				client.conn.Close()
+				debugLog("Client unregistered: %s", client.userID)
 			}
 			mutex.Unlock()
 
 		case message := <-broadcast:
-			// Broadcast a message to all subscribed clients.
-			log.Printf("Broadcasting message to channel %s subscribers", message.Channel)
+			debugLog("Broadcasting message: Channel=%s, Event=%s, UserID=%s",
+				message.Channel, message.Event, message.UserID)
+
 			mutex.RLock()
-			var clientsToRemove []*Client
 			for client := range clients {
-				if client.isSubscribed(message.Channel) {
+				if client.isSubscribed(message.Channel, message.Event) {
+					// if client.userID == message.UserID {
+					// 	debugLog("Skipping message back to sender: %s", client.userID)
+					// 	continue
+					// }
+
+					debugLog("Sending message to client: %s", client.userID)
 					err := client.conn.WriteJSON(message)
 					if err != nil {
-						log.Printf("Error sending message to client: %v", err)
+						debugLog("Error sending message to client %s: %v", client.userID, err)
 						client.conn.Close()
-						clientsToRemove = append(clientsToRemove, client)
+						delete(clients, client)
 					}
 				}
 			}
 			mutex.RUnlock()
 
-			// Remove clients that encountered errors.
-			if len(clientsToRemove) > 0 {
-				mutex.Lock()
-				for _, client := range clientsToRemove {
-					delete(clients, client)
-				}
-				mutex.Unlock()
-			}
-
 		case <-ticker.C:
-			// Send ping messages to all clients for keep-alive.
 			mutex.RLock()
-			var clientsToRemove []*Client
 			for client := range clients {
 				err := client.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second))
 				if err != nil {
-					log.Printf("Ping failed for client %s: %v", client.conn.RemoteAddr(), err)
+					debugLog("Ping failed for client %s: %v", client.userID, err)
 					client.conn.Close()
-					clientsToRemove = append(clientsToRemove, client)
+					delete(clients, client)
 				}
 			}
 			mutex.RUnlock()
-
-			// Remove clients that failed to respond to ping.
-			if len(clientsToRemove) > 0 {
-				mutex.Lock()
-				for _, client := range clientsToRemove {
-					delete(clients, client)
-				}
-				mutex.Unlock()
-			}
 		}
 	}
 }
