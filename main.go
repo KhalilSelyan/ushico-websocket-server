@@ -139,7 +139,7 @@ func handleClient(client *Client) {
 			log.Printf("Broadcasting sync message - Time: %.2f, State: %s", syncData.Timestamp, syncData.State)
 			// Broadcast the original message.
 			broadcast <- message
-		case "incoming_message", "new_message", "new_friend", "incoming_friend_request", "friend_request_denied", "friend_request_accepted":
+		case "incoming_message", "new_message", "new_friend", "incoming_friend_request", "friend_request_denied", "friend_request_accepted", "friend_removed":
 			log.Printf("Handling %s event for channel: %s", message.Event, message.Channel)
 			// Broadcast the message to clients subscribed to the channel
 			broadcast <- message
