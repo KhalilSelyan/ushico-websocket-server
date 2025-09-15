@@ -712,6 +712,360 @@ func handleSyncRoomState(client *Client, message Message) {
 	// Room state synchronized
 }
 
+// handleRoomJoinRequest notifies the room host of a new join request
+func handleRoomJoinRequest(client *Client, message Message) {
+	var requestData struct {
+		RoomID      string `json:"roomId"`
+		RequesterID string `json:"requesterId"`
+		RequestID   string `json:"requestId"`
+		UserName    string `json:"userName"`
+		UserImage   string `json:"userImage"`
+	}
+
+	if err := json.Unmarshal(message.Data, &requestData); err != nil {
+		log.Printf("Error parsing join request data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid join request data format")
+		return
+	}
+
+	// Validate that the room exists and get host ID
+	roomMutex.RLock()
+	room, exists := rooms[requestData.RoomID]
+	roomMutex.RUnlock()
+
+	if !exists {
+		sendErrorResponse(client, "ROOM_NOT_FOUND", "Room not found")
+		return
+	}
+
+	// Send notification to room host
+	broadcastToSpecificUser(room.HostID, "room_join_request", requestData)
+}
+
+// handleJoinRequestApproved notifies the requester that their request was approved
+func handleJoinRequestApproved(client *Client, message Message) {
+	var approvalData struct {
+		RequestID   string `json:"requestId"`
+		RequesterID string `json:"requesterId"`
+		RoomID      string `json:"roomId"`
+		RoomName    string `json:"roomName"`
+	}
+
+	if err := json.Unmarshal(message.Data, &approvalData); err != nil {
+		log.Printf("Error parsing join approval data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid join approval data format")
+		return
+	}
+
+	// Send notification to the requester
+	broadcastToSpecificUser(approvalData.RequesterID, "join_request_approved", approvalData)
+}
+
+// handleJoinRequestDenied notifies the requester that their request was denied
+func handleJoinRequestDenied(client *Client, message Message) {
+	var denialData struct {
+		RequestID   string `json:"requestId"`
+		RequesterID string `json:"requesterId"`
+		RoomID      string `json:"roomId"`
+		RoomName    string `json:"roomName"`
+		Reason      string `json:"reason,omitempty"`
+	}
+
+	if err := json.Unmarshal(message.Data, &denialData); err != nil {
+		log.Printf("Error parsing join denial data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid join denial data format")
+		return
+	}
+
+	// Send notification to the requester
+	broadcastToSpecificUser(denialData.RequesterID, "join_request_denied", denialData)
+}
+
+// handleRoomInvitation notifies a user of a room invitation
+func handleRoomInvitation(client *Client, message Message) {
+	var inviteData struct {
+		InvitationID string `json:"invitationId"`
+		InviteeID    string `json:"inviteeId"`
+		InviterID    string `json:"inviterId"`
+		InviterName  string `json:"inviterName"`
+		RoomID       string `json:"roomId"`
+		RoomName     string `json:"roomName"`
+	}
+
+	if err := json.Unmarshal(message.Data, &inviteData); err != nil {
+		log.Printf("Error parsing room invitation data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid room invitation data format")
+		return
+	}
+
+	// Send notification to the invitee
+	broadcastToSpecificUser(inviteData.InviteeID, "room_invitation", inviteData)
+}
+
+// handleRoomDeactivated notifies all participants that the room has been ended
+func handleRoomDeactivated(client *Client, message Message) {
+	var deactivationData struct {
+		RoomID   string `json:"roomId"`
+		RoomName string `json:"roomName"`
+		Reason   string `json:"reason,omitempty"`
+	}
+
+	if err := json.Unmarshal(message.Data, &deactivationData); err != nil {
+		log.Printf("Error parsing room deactivation data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid room deactivation data format")
+		return
+	}
+
+	// Get all room participants before deactivating
+	participants := getRoomParticipants(deactivationData.RoomID)
+
+	// Notify all participants
+	for _, participantID := range participants {
+		broadcastToSpecificUser(participantID, "room_deactivated", deactivationData)
+	}
+
+	// Deactivate the room in our state
+	roomMutex.Lock()
+	if room, exists := rooms[deactivationData.RoomID]; exists {
+		room.IsActive = false
+	}
+	roomMutex.Unlock()
+}
+
+// handleParticipantKicked notifies a user that they were removed from the room
+func handleParticipantKicked(client *Client, message Message) {
+	var kickData struct {
+		RoomID      string `json:"roomId"`
+		RoomName    string `json:"roomName"`
+		KickedID    string `json:"kickedId"`
+		KickedName  string `json:"kickedName"`
+		Reason      string `json:"reason,omitempty"`
+	}
+
+	if err := json.Unmarshal(message.Data, &kickData); err != nil {
+		log.Printf("Error parsing participant kick data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid participant kick data format")
+		return
+	}
+
+	// Remove user from room state
+	if err := leaveRoom(kickData.RoomID, kickData.KickedID); err != nil {
+		log.Printf("Error removing kicked user from room: %v", err)
+	}
+
+	// Send notification to the kicked user
+	broadcastToSpecificUser(kickData.KickedID, "participant_kicked", kickData)
+
+	// Notify other participants about the kick
+	participants := getRoomParticipants(kickData.RoomID)
+	kickNotification := map[string]interface{}{
+		"userId":   kickData.KickedID,
+		"userName": kickData.KickedName,
+		"reason":   kickData.Reason,
+	}
+
+	for _, participantID := range participants {
+		if participantID != kickData.KickedID {
+			broadcastToSpecificUser(participantID, "participant_left", kickNotification)
+		}
+	}
+}
+
+// broadcastToSpecificUser sends a message to a specific user if they're connected
+func broadcastToSpecificUser(userID, eventType string, data interface{}) {
+	// Marshal the data
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("Error marshaling user-specific broadcast data: %v", err)
+		return
+	}
+
+	// Create the message
+	userMessage := Message{
+		Channel: fmt.Sprintf("user-%s", userID),
+		Event:   eventType,
+		Data:    jsonData,
+	}
+
+	// Find and send to the specific user
+	mutex.RLock()
+	for client := range clients {
+		if client.userID == userID {
+			if err := client.conn.WriteJSON(userMessage); err != nil {
+				log.Printf("Error sending message to user %s: %v", userID, err)
+			}
+			break
+		}
+	}
+	mutex.RUnlock()
+}
+
+// handleUserTyping broadcasts typing indicator to room participants
+func handleUserTyping(client *Client, message Message) {
+	var typingData struct {
+		RoomID   string `json:"roomId"`
+		UserID   string `json:"userId"`
+		UserName string `json:"userName"`
+	}
+
+	if err := json.Unmarshal(message.Data, &typingData); err != nil {
+		log.Printf("Error parsing typing data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid typing data format")
+		return
+	}
+
+	// Validate user is in the room
+	if !client.isInRoom(typingData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to send typing indicators")
+		return
+	}
+
+	// Broadcast typing indicator to all room participants except sender
+	broadcastToRoomExceptSender(typingData.RoomID, client.userID, "user_typing", typingData)
+}
+
+// handleUserStoppedTyping broadcasts stop typing indicator to room participants
+func handleUserStoppedTyping(client *Client, message Message) {
+	var typingData struct {
+		RoomID   string `json:"roomId"`
+		UserID   string `json:"userId"`
+		UserName string `json:"userName"`
+	}
+
+	if err := json.Unmarshal(message.Data, &typingData); err != nil {
+		log.Printf("Error parsing stop typing data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid stop typing data format")
+		return
+	}
+
+	// Validate user is in the room
+	if !client.isInRoom(typingData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to send typing indicators")
+		return
+	}
+
+	// Broadcast stop typing indicator to all room participants except sender
+	broadcastToRoomExceptSender(typingData.RoomID, client.userID, "user_stopped_typing", typingData)
+}
+
+// handleVideoReaction broadcasts emoji reactions with timestamp sync
+func handleVideoReaction(client *Client, message Message) {
+	var reactionData struct {
+		RoomID         string  `json:"roomId"`
+		UserID         string  `json:"userId"`
+		UserName       string  `json:"userName"`
+		Emoji          string  `json:"emoji"`
+		VideoTimestamp float64 `json:"videoTimestamp"`
+		Timestamp      string  `json:"timestamp"`
+		ReactionID     string  `json:"reactionId"`
+	}
+
+	if err := json.Unmarshal(message.Data, &reactionData); err != nil {
+		log.Printf("Error parsing reaction data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid reaction data format")
+		return
+	}
+
+	// Validate user is in the room
+	if !client.isInRoom(reactionData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to send reactions")
+		return
+	}
+
+	// Validate emoji (basic check for common reactions)
+	validEmojis := map[string]bool{
+		"😂": true, "❤️": true, "😮": true, "👏": true, "😢": true,
+		"🔥": true, "💯": true, "👍": true, "👎": true, "😍": true,
+	}
+
+	if !validEmojis[reactionData.Emoji] {
+		sendErrorResponse(client, "INVALID_EMOJI", "Invalid emoji for reactions")
+		return
+	}
+
+	// Broadcast reaction to all room participants including sender (they want to see their own reaction)
+	broadcastToRoom(reactionData.RoomID, "video_reaction", reactionData)
+}
+
+// broadcastToRoom broadcasts a message to all room participants including sender
+func broadcastToRoom(roomID, eventType string, data interface{}) {
+	// Marshal the data
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("Error marshaling room broadcast data: %v", err)
+		return
+	}
+
+	// Create the message
+	broadcastMessage := Message{
+		Channel: fmt.Sprintf("room-%s", roomID),
+		Event:   eventType,
+		Data:    jsonData,
+	}
+
+	// Send to all clients subscribed to this room channel
+	mutex.RLock()
+	var clientsToRemove []*Client
+	for client := range clients {
+		if client.isSubscribed(fmt.Sprintf("room-%s", roomID)) {
+			err := client.conn.WriteJSON(broadcastMessage)
+			if err != nil {
+				log.Printf("Error sending message to client %s: %v", client.userID, err)
+				client.conn.Close()
+				clientsToRemove = append(clientsToRemove, client)
+			}
+		}
+	}
+	mutex.RUnlock()
+
+	// Remove clients that encountered errors
+	if len(clientsToRemove) > 0 {
+		mutex.Lock()
+		for _, client := range clientsToRemove {
+			delete(clients, client)
+		}
+		mutex.Unlock()
+	}
+}
+
+// handleRoomAnnouncement broadcasts system messages to room participants
+func handleRoomAnnouncement(client *Client, message Message) {
+	var announcementData struct {
+		RoomID      string `json:"roomId"`
+		Type        string `json:"type"`        // "user_joined", "user_left", "video_changed", "host_paused", etc.
+		UserName    string `json:"userName"`
+		Message     string `json:"message"`     // Pre-formatted message text
+		Timestamp   string `json:"timestamp"`
+		AnnouncementID string `json:"announcementId"`
+	}
+
+	if err := json.Unmarshal(message.Data, &announcementData); err != nil {
+		log.Printf("Error parsing announcement data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid announcement data format")
+		return
+	}
+
+	// Validate announcement type
+	validTypes := map[string]bool{
+		"user_joined":     true,
+		"user_left":       true,
+		"video_changed":   true,
+		"host_paused":     true,
+		"host_resumed":    true,
+		"host_transferred": true,
+		"room_created":    true,
+		"video_seeked":    true,
+	}
+
+	if !validTypes[announcementData.Type] {
+		sendErrorResponse(client, "INVALID_ANNOUNCEMENT_TYPE", "Invalid announcement type")
+		return
+	}
+
+	// Broadcast announcement to all room participants
+	broadcastToRoom(announcementData.RoomID, "room_announcement", announcementData)
+}
+
 // handleClient manages the connection for an individual client.
 func handleClient(client *Client) {
 	defer func() {
@@ -765,6 +1119,30 @@ func handleClient(client *Client) {
 			handleRoomMessage(client, message)
 		case "sync_room_state":
 			handleSyncRoomState(client, message)
+		// NOTIFICATION EVENTS
+		case "room_join_request":
+			handleRoomJoinRequest(client, message)
+		case "join_request_approved":
+			handleJoinRequestApproved(client, message)
+		case "join_request_denied":
+			handleJoinRequestDenied(client, message)
+		case "room_invitation":
+			handleRoomInvitation(client, message)
+		case "room_deactivated":
+			handleRoomDeactivated(client, message)
+		case "participant_kicked":
+			handleParticipantKicked(client, message)
+		// TYPING INDICATORS
+		case "user_typing":
+			handleUserTyping(client, message)
+		case "user_stopped_typing":
+			handleUserStoppedTyping(client, message)
+		// VIDEO REACTIONS
+		case "video_reaction":
+			handleVideoReaction(client, message)
+		// ACTIVITY ANNOUNCEMENTS
+		case "room_announcement":
+			handleRoomAnnouncement(client, message)
 		// LEGACY SUPPORT
 		case "sync":
 			handleLegacySync(client, message)
