@@ -42,6 +42,7 @@ type SyncData struct {
 	URL       string  `json:"url"`       // The video URL.
 	RoomID    string  `json:"roomId"`    // The room identifier (updated from ChatID).
 	State     string  `json:"state"`     // The state of the video (playing/paused).
+	VideoID   string  `json:"videoId"`   // UUID generated when URL changes for sync safety.
 }
 
 // Room represents a watch party room state (in-memory only).
@@ -467,10 +468,10 @@ func handleHostSync(client *Client, message Message) {
 	roomMutex.Lock()
 	if room, exists := rooms[roomID]; exists {
 		room.CurrentVideo = syncData
+		log.Printf("Room %s video sync: URL=%s, VideoID=%s, Time=%.2f, State=%s",
+			roomID, syncData.URL, syncData.VideoID, syncData.Timestamp, syncData.State)
 	}
 	roomMutex.Unlock()
-
-	// Broadcast sync message
 
 	// Broadcast the sync message to all room participants
 	broadcast <- message
