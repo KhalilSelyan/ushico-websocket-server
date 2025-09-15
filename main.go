@@ -51,6 +51,7 @@ type Room struct {
 	HostID       string            `json:"hostId"`
 	Name         string            `json:"name"`
 	Participants map[string]string `json:"participants"` // userID -> role mapping
+	Presence     map[string]string `json:"presence"`     // userID -> presence state (active, away, offline)
 	IsActive     bool              `json:"isActive"`
 	CreatedAt    time.Time         `json:"createdAt"`
 	CurrentVideo SyncData          `json:"currentVideo"`
@@ -125,11 +126,13 @@ func createRoom(hostID, roomName string) *Room {
 		HostID:       hostID,
 		Name:         roomName,
 		Participants: make(map[string]string),
+		Presence:     make(map[string]string),
 		IsActive:     true,
 		CreatedAt:    time.Now(),
 		CurrentVideo: SyncData{},
 	}
 	room.Participants[hostID] = "host"
+	room.Presence[hostID] = "active"
 	rooms[roomID] = room
 
 	return room
@@ -149,6 +152,7 @@ func joinRoom(roomID, userID string) error {
 	}
 
 	room.Participants[userID] = "viewer"
+	room.Presence[userID] = "active" // User joins as active
 	return nil
 }
 
@@ -163,6 +167,7 @@ func leaveRoom(roomID, userID string) error {
 	}
 
 	delete(room.Participants, userID)
+	delete(room.Presence, userID) // Remove presence when leaving
 
 	// If no participants left, deactivate room
 	if len(room.Participants) == 0 {
@@ -673,6 +678,7 @@ func handleSyncRoomState(client *Client, message Message) {
 		HostID:       roomData.HostID,
 		Name:         roomData.RoomName,
 		Participants: make(map[string]string),
+		Presence:     make(map[string]string),
 		IsActive:     true,
 		CreatedAt:    time.Now(),
 		CurrentVideo: SyncData{},
@@ -681,6 +687,7 @@ func handleSyncRoomState(client *Client, message Message) {
 	// Add all participants
 	for _, p := range roomData.Participants {
 		room.Participants[p.UserID] = p.Role
+		room.Presence[p.UserID] = "active" // Initialize as active when syncing
 	}
 
 	rooms[roomData.RoomID] = room
@@ -1066,6 +1073,100 @@ func handleRoomAnnouncement(client *Client, message Message) {
 	broadcastToRoom(announcementData.RoomID, "room_announcement", announcementData)
 }
 
+// handleUserPresenceUpdate updates and broadcasts user presence status
+func handleUserPresenceUpdate(client *Client, message Message) {
+	var presenceData struct {
+		RoomID       string `json:"roomId"`
+		UserID       string `json:"userId"`
+		UserName     string `json:"userName"`
+		PresenceState string `json:"presenceState"` // "active", "away", "offline"
+		Timestamp    string `json:"timestamp"`
+	}
+
+	if err := json.Unmarshal(message.Data, &presenceData); err != nil {
+		log.Printf("Error parsing presence data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid presence data format")
+		return
+	}
+
+	// Validate presence state
+	validStates := map[string]bool{
+		"active":  true,
+		"away":    true,
+		"offline": true,
+	}
+
+	if !validStates[presenceData.PresenceState] {
+		sendErrorResponse(client, "INVALID_PRESENCE_STATE", "Invalid presence state")
+		return
+	}
+
+	// Validate user is in the room
+	if !client.isInRoom(presenceData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to update presence")
+		return
+	}
+
+	// Update presence in room state
+	roomMutex.Lock()
+	if room, exists := rooms[presenceData.RoomID]; exists {
+		if room.Presence == nil {
+			room.Presence = make(map[string]string)
+		}
+		room.Presence[presenceData.UserID] = presenceData.PresenceState
+	}
+	roomMutex.Unlock()
+
+	// Broadcast presence update to all room participants
+	broadcastToRoom(presenceData.RoomID, "user_presence_updated", presenceData)
+}
+
+// handleGetRoomPresence sends current presence status of all room participants
+func handleGetRoomPresence(client *Client, message Message) {
+	var requestData struct {
+		RoomID string `json:"roomId"`
+	}
+
+	if err := json.Unmarshal(message.Data, &requestData); err != nil {
+		log.Printf("Error parsing room presence request: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid presence request format")
+		return
+	}
+
+	// Validate user is in the room
+	if !client.isInRoom(requestData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to get presence")
+		return
+	}
+
+	// Get current presence state
+	roomMutex.RLock()
+	var presenceData map[string]string
+	if room, exists := rooms[requestData.RoomID]; exists {
+		presenceData = make(map[string]string)
+		for userID, state := range room.Presence {
+			presenceData[userID] = state
+		}
+	}
+	roomMutex.RUnlock()
+
+	// Send presence data back to requesting client
+	responseData, _ := json.Marshal(map[string]interface{}{
+		"roomId":   requestData.RoomID,
+		"presence": presenceData,
+	})
+
+	responseMessage := Message{
+		Channel: fmt.Sprintf("user-%s", client.userID),
+		Event:   "room_presence_status",
+		Data:    responseData,
+	}
+
+	if err := client.conn.WriteJSON(responseMessage); err != nil {
+		log.Printf("Error sending presence status: %v", err)
+	}
+}
+
 // handleClient manages the connection for an individual client.
 func handleClient(client *Client) {
 	defer func() {
@@ -1143,6 +1244,11 @@ func handleClient(client *Client) {
 		// ACTIVITY ANNOUNCEMENTS
 		case "room_announcement":
 			handleRoomAnnouncement(client, message)
+		// USER PRESENCE
+		case "user_presence_update":
+			handleUserPresenceUpdate(client, message)
+		case "get_room_presence":
+			handleGetRoomPresence(client, message)
 		// LEGACY SUPPORT
 		case "sync":
 			handleLegacySync(client, message)
@@ -1206,8 +1312,35 @@ func handleMessages() {
 			// Unregister a client.
 			log.Printf("Client unregistered from: %s with userID: %s", client.conn.RemoteAddr(), client.userID)
 
-			// Remove client from all rooms
+			// Remove client from all rooms and update presence
 			for roomID := range client.rooms {
+				// Mark user as offline before leaving
+				roomMutex.Lock()
+				if room, exists := rooms[roomID]; exists && room.Presence != nil {
+					room.Presence[client.userID] = "offline"
+					// Broadcast offline status
+					offlineData, _ := json.Marshal(map[string]interface{}{
+						"roomId":        roomID,
+						"userId":        client.userID,
+						"presenceState": "offline",
+						"timestamp":     time.Now().Format(time.RFC3339),
+					})
+
+					offlineMessage := Message{
+						Channel: fmt.Sprintf("room-%s", roomID),
+						Event:   "user_presence_updated",
+						Data:    offlineData,
+					}
+
+					// Send to other room participants
+					for otherClient := range clients {
+						if otherClient != client && otherClient.isSubscribed(fmt.Sprintf("room-%s", roomID)) {
+							otherClient.conn.WriteJSON(offlineMessage)
+						}
+					}
+				}
+				roomMutex.Unlock()
+
 				if err := leaveRoom(roomID, client.userID); err != nil {
 					log.Printf("Error removing user %s from room %s during disconnect: %v", client.userID, roomID, err)
 				}
