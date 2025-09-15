@@ -22,10 +22,11 @@ var upgrader = websocket.Upgrader{
 
 // Client represents a connected WebSocket client.
 type Client struct {
-	conn     *websocket.Conn // The WebSocket connection.
-	channels map[string]bool // The channels the client is subscribed to.
-	mu       sync.Mutex      // Mutex to protect the channels map.
-	// userID   string          // Add userID to identify the client
+	conn     *websocket.Conn   // The WebSocket connection.
+	channels map[string]bool   // The channels the client is subscribed to.
+	mu       sync.Mutex        // Mutex to protect the channels map.
+	userID   string            // User identifier for the client
+	rooms    map[string]string // roomID -> role mapping
 }
 
 // Message represents the structure of messages sent over WebSocket.
@@ -39,8 +40,34 @@ type Message struct {
 type SyncData struct {
 	Timestamp float64 `json:"timestamp"` // The current time of the video.
 	URL       string  `json:"url"`       // The video URL.
-	ChatID    string  `json:"chatId"`    // The chat room identifier.
+	RoomID    string  `json:"roomId"`    // The room identifier (updated from ChatID).
 	State     string  `json:"state"`     // The state of the video (playing/paused).
+}
+
+// Room represents a watch party room state (in-memory only).
+type Room struct {
+	ID           string            `json:"id"`
+	HostID       string            `json:"hostId"`
+	Name         string            `json:"name"`
+	Participants map[string]string `json:"participants"` // userID -> role mapping
+	IsActive     bool              `json:"isActive"`
+	CreatedAt    time.Time         `json:"createdAt"`
+	CurrentVideo SyncData          `json:"currentVideo"`
+}
+
+// RoomData for room creation/management events.
+type RoomData struct {
+	RoomID   string   `json:"roomId"`
+	RoomName string   `json:"roomName,omitempty"`
+	UserID   string   `json:"userId"`
+	UserIDs  []string `json:"userIds,omitempty"` // for bulk operations
+}
+
+// ErrorResponse for client errors.
+type ErrorResponse struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
+	Code    string `json:"code"`
 }
 
 // Global variables for managing clients and messages.
@@ -50,6 +77,8 @@ var (
 	register   = make(chan *Client)     // Channel for registering new clients.
 	unregister = make(chan *Client)     // Channel for unregistering clients.
 	mutex      = &sync.RWMutex{}        // Read-write mutex to protect the clients map.
+	rooms      = make(map[string]*Room) // Active rooms.
+	roomMutex  = &sync.RWMutex{}        // Protect rooms map.
 )
 
 // Subscribe adds the client to the specified channel.
@@ -57,7 +86,6 @@ func (c *Client) subscribe(channel string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.channels[channel] = true
-	log.Printf("Client subscribed to channel: %s", channel)
 }
 
 // Unsubscribe removes the client from the specified channel.
@@ -65,7 +93,6 @@ func (c *Client) unsubscribe(channel string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.channels, channel)
-	log.Printf("Client unsubscribed from channel: %s", channel)
 }
 
 // isSubscribed checks if the client is subscribed to the specified channel.
@@ -79,6 +106,609 @@ func (c *Client) isSubscribed(channel string) bool {
 func validateChatID(chatID string) bool {
 	parts := strings.Split(chatID, "--")
 	return len(parts) == 2 && len(parts[0]) > 0 && len(parts[1]) > 0
+}
+
+// validateRoomID checks if room ID format is valid.
+func validateRoomID(roomID string) bool {
+	return len(roomID) > 0 && !strings.Contains(roomID, "--")
+}
+
+// createRoom creates a new watch party room.
+func createRoom(hostID, roomName string) *Room {
+	roomMutex.Lock()
+	defer roomMutex.Unlock()
+
+	roomID := fmt.Sprintf("room_%d", time.Now().UnixNano())
+	room := &Room{
+		ID:           roomID,
+		HostID:       hostID,
+		Name:         roomName,
+		Participants: make(map[string]string),
+		IsActive:     true,
+		CreatedAt:    time.Now(),
+		CurrentVideo: SyncData{},
+	}
+	room.Participants[hostID] = "host"
+	rooms[roomID] = room
+
+	return room
+}
+
+// joinRoom adds a user to an existing room.
+func joinRoom(roomID, userID string) error {
+	roomMutex.Lock()
+	defer roomMutex.Unlock()
+
+	room, exists := rooms[roomID]
+	if !exists {
+		return fmt.Errorf("room not found")
+	}
+	if !room.IsActive {
+		return fmt.Errorf("room is not active")
+	}
+
+	room.Participants[userID] = "viewer"
+	return nil
+}
+
+// leaveRoom removes a user from a room.
+func leaveRoom(roomID, userID string) error {
+	roomMutex.Lock()
+	defer roomMutex.Unlock()
+
+	room, exists := rooms[roomID]
+	if !exists {
+		return fmt.Errorf("room not found")
+	}
+
+	delete(room.Participants, userID)
+
+	// If no participants left, deactivate room
+	if len(room.Participants) == 0 {
+		room.IsActive = false
+		log.Printf("Room %s deactivated (no participants)", roomID)
+	} else if room.HostID == userID {
+		// Transfer host to first available participant
+		for participantID := range room.Participants {
+			room.HostID = participantID
+			room.Participants[participantID] = "host"
+			break
+		}
+	}
+
+	return nil
+}
+
+// isRoomHost checks if user is the host of the room.
+func isRoomHost(roomID, userID string) bool {
+	roomMutex.RLock()
+	defer roomMutex.RUnlock()
+
+	room, exists := rooms[roomID]
+	if !exists {
+		return false
+	}
+	return room.HostID == userID
+}
+
+// transferHost transfers host privileges to another user.
+func transferHost(roomID, newHostID string) error {
+	roomMutex.Lock()
+	defer roomMutex.Unlock()
+
+	room, exists := rooms[roomID]
+	if !exists {
+		return fmt.Errorf("room not found")
+	}
+
+	// Check if new host is in the room
+	if _, isParticipant := room.Participants[newHostID]; !isParticipant {
+		return fmt.Errorf("user is not a participant in this room")
+	}
+
+	// Update roles
+	oldHostID := room.HostID
+	room.Participants[oldHostID] = "viewer"
+	room.Participants[newHostID] = "host"
+	room.HostID = newHostID
+
+	return nil
+}
+
+// getRoomParticipants returns all participants in a room.
+func getRoomParticipants(roomID string) []string {
+	roomMutex.RLock()
+	defer roomMutex.RUnlock()
+
+	room, exists := rooms[roomID]
+	if !exists {
+		return []string{}
+	}
+
+	participants := make([]string, 0, len(room.Participants))
+	for userID := range room.Participants {
+		participants = append(participants, userID)
+	}
+	return participants
+}
+
+// cleanupEmptyRooms removes rooms with no participants.
+func cleanupEmptyRooms() {
+	roomMutex.Lock()
+	defer roomMutex.Unlock()
+
+	for roomID, room := range rooms {
+		if len(room.Participants) == 0 || !room.IsActive {
+			delete(rooms, roomID)
+			// Room cleaned up
+		}
+	}
+}
+
+// Client room management methods
+// joinRoom adds the client to a room with the specified role.
+func (c *Client) joinRoomAsClient(roomID, role string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.rooms == nil {
+		c.rooms = make(map[string]string)
+	}
+	c.rooms[roomID] = role
+}
+
+// leaveRoomAsClient removes the client from a room.
+func (c *Client) leaveRoomAsClient(roomID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.rooms, roomID)
+}
+
+// isInRoom checks if the client is in the specified room.
+func (c *Client) isInRoom(roomID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, exists := c.rooms[roomID]
+	return exists
+}
+
+// getRoleInRoom returns the client's role in the specified room.
+func (c *Client) getRoleInRoom(roomID string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rooms[roomID]
+}
+
+// sendErrorResponse sends an error message back to the client.
+func sendErrorResponse(client *Client, errorCode, message string) {
+	errorResp := ErrorResponse{
+		Error:   errorCode,
+		Message: message,
+		Code:    errorCode,
+	}
+
+	errorData, _ := json.Marshal(errorResp)
+	errorMessage := Message{
+		Channel: "error",
+		Event:   "error_response",
+		Data:    errorData,
+	}
+
+	if err := client.conn.WriteJSON(errorMessage); err != nil {
+		log.Printf("Error sending error response to client: %v", err)
+	}
+}
+
+// validateHostPermission checks if user has host permission for the action.
+func validateHostPermission(roomID, userID string, action string) error {
+	if !isRoomHost(roomID, userID) {
+		return fmt.Errorf("permission denied: only host can %s", action)
+	}
+	return nil
+}
+
+// Event handler functions
+func handleCreateRoom(client *Client, message Message) {
+	var roomData RoomData
+	if err := json.Unmarshal(message.Data, &roomData); err != nil {
+		log.Printf("Error parsing room data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid room data format")
+		return
+	}
+
+	if client.userID == "" {
+		sendErrorResponse(client, "NO_USER_ID", "User ID required to create room")
+		return
+	}
+
+	room := createRoom(client.userID, roomData.RoomName)
+	client.joinRoomAsClient(room.ID, "host")
+	client.subscribe(fmt.Sprintf("room-%s", room.ID))
+
+	// Broadcast room creation notification
+	roomCreatedData, _ := json.Marshal(map[string]interface{}{
+		"roomId":   room.ID,
+		"roomName": room.Name,
+		"hostId":   room.HostID,
+	})
+
+	responseMessage := Message{
+		Channel: fmt.Sprintf("room-%s", room.ID),
+		Event:   "room_created",
+		Data:    roomCreatedData,
+	}
+	broadcast <- responseMessage
+
+	// Room created successfully
+}
+
+func handleJoinRoom(client *Client, message Message) {
+	var roomData RoomData
+	if err := json.Unmarshal(message.Data, &roomData); err != nil {
+		log.Printf("Error parsing room data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid room data format")
+		return
+	}
+
+	if client.userID == "" {
+		sendErrorResponse(client, "NO_USER_ID", "User ID required to join room")
+		return
+	}
+
+	if err := joinRoom(roomData.RoomID, client.userID); err != nil {
+		log.Printf("Error joining room: %v", err)
+		sendErrorResponse(client, "JOIN_FAILED", err.Error())
+		return
+	}
+
+	client.joinRoomAsClient(roomData.RoomID, "viewer")
+	client.subscribe(fmt.Sprintf("room-%s", roomData.RoomID))
+
+	// Broadcast participant joined notification
+	joinedData, _ := json.Marshal(map[string]interface{}{
+		"userId": client.userID,
+		"role":   "viewer",
+	})
+
+	responseMessage := Message{
+		Channel: fmt.Sprintf("room-%s", roomData.RoomID),
+		Event:   "participant_joined",
+		Data:    joinedData,
+	}
+	broadcast <- responseMessage
+
+	// User joined room successfully
+}
+
+func handleLeaveRoom(client *Client, message Message) {
+	var roomData RoomData
+	if err := json.Unmarshal(message.Data, &roomData); err != nil {
+		log.Printf("Error parsing room data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid room data format")
+		return
+	}
+
+	if client.userID == "" {
+		sendErrorResponse(client, "NO_USER_ID", "User ID required to leave room")
+		return
+	}
+
+	// Check if user was host before leaving
+	wasHost := isRoomHost(roomData.RoomID, client.userID)
+
+	if err := leaveRoom(roomData.RoomID, client.userID); err != nil {
+		log.Printf("Error leaving room: %v", err)
+		sendErrorResponse(client, "LEAVE_FAILED", err.Error())
+		return
+	}
+
+	client.leaveRoomAsClient(roomData.RoomID)
+	client.unsubscribe(fmt.Sprintf("room-%s", roomData.RoomID))
+
+	// Broadcast participant left notification
+	leftData, _ := json.Marshal(map[string]interface{}{
+		"userId":  client.userID,
+		"wasHost": wasHost,
+	})
+
+	responseMessage := Message{
+		Channel: fmt.Sprintf("room-%s", roomData.RoomID),
+		Event:   "participant_left",
+		Data:    leftData,
+	}
+	broadcast <- responseMessage
+
+	// If host left and room still has participants, broadcast host transfer
+	roomMutex.RLock()
+	room, exists := rooms[roomData.RoomID]
+	roomMutex.RUnlock()
+
+	if exists && wasHost && len(room.Participants) > 0 {
+		transferData, _ := json.Marshal(map[string]interface{}{
+			"oldHostId": client.userID,
+			"newHostId": room.HostID,
+		})
+
+		transferMessage := Message{
+			Channel: fmt.Sprintf("room-%s", roomData.RoomID),
+			Event:   "host_transferred",
+			Data:    transferData,
+		}
+		broadcast <- transferMessage
+	}
+
+	// User left room successfully
+}
+
+func handleHostSync(client *Client, message Message) {
+	// Extract room ID from channel
+	roomID := strings.TrimPrefix(message.Channel, "room-")
+	if !validateRoomID(roomID) {
+		log.Printf("Invalid room ID format: %s", roomID)
+		sendErrorResponse(client, "INVALID_ROOM_ID", "Invalid room ID format")
+		return
+	}
+
+	// Validate host permission
+	if err := validateHostPermission(roomID, client.userID, "control video playback"); err != nil {
+		log.Printf("Permission denied for user %s in room %s: %v", client.userID, roomID, err)
+		sendErrorResponse(client, "PERMISSION_DENIED", "Only host can control video playback")
+		return
+	}
+
+	// Parse sync data
+	var syncData SyncData
+	if err := json.Unmarshal(message.Data, &syncData); err != nil {
+		log.Printf("Error parsing sync data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid sync data format")
+		return
+	}
+
+	// Update room's current video state
+	roomMutex.Lock()
+	if room, exists := rooms[roomID]; exists {
+		room.CurrentVideo = syncData
+	}
+	roomMutex.Unlock()
+
+	// Broadcast sync message
+
+	// Broadcast the sync message to all room participants
+	broadcast <- message
+}
+
+func handleTransferHost(client *Client, message Message) {
+	var roomData RoomData
+	if err := json.Unmarshal(message.Data, &roomData); err != nil {
+		log.Printf("Error parsing room data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid room data format")
+		return
+	}
+
+	// Validate current host permission
+	if err := validateHostPermission(roomData.RoomID, client.userID, "transfer host"); err != nil {
+		log.Printf("Permission denied for user %s: %v", client.userID, err)
+		sendErrorResponse(client, "PERMISSION_DENIED", "Only current host can transfer host privileges")
+		return
+	}
+
+	// Transfer host
+	if err := transferHost(roomData.RoomID, roomData.UserID); err != nil {
+		log.Printf("Error transferring host: %v", err)
+		sendErrorResponse(client, "TRANSFER_FAILED", err.Error())
+		return
+	}
+
+	// Update client roles
+	client.leaveRoomAsClient(roomData.RoomID)
+	client.joinRoomAsClient(roomData.RoomID, "viewer")
+
+	// Broadcast host transfer notification
+	transferData, _ := json.Marshal(map[string]interface{}{
+		"oldHostId": client.userID,
+		"newHostId": roomData.UserID,
+	})
+
+	responseMessage := Message{
+		Channel: fmt.Sprintf("room-%s", roomData.RoomID),
+		Event:   "host_transferred",
+		Data:    transferData,
+	}
+	broadcast <- responseMessage
+
+	// Host transferred successfully
+}
+
+func handleRoomMessage(client *Client, message Message) {
+	// Extract room ID from channel
+	roomID := strings.TrimPrefix(message.Channel, "room-")
+	if !validateRoomID(roomID) {
+		log.Printf("Invalid room ID format: %s", roomID)
+		sendErrorResponse(client, "INVALID_ROOM_ID", "Invalid room ID format")
+		return
+	}
+
+	// Check if user is in the room
+	if !client.isInRoom(roomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "You must be in the room to send messages")
+		return
+	}
+
+	// Parse the rich message data
+	var messageData struct {
+		RoomID      string `json:"roomId"`
+		Text        string `json:"text"`
+		SenderID    string `json:"senderId"`
+		SenderName  string `json:"senderName"`
+		SenderImage string `json:"senderImage"`
+		Timestamp   string `json:"timestamp"`
+		MessageID   string `json:"messageId"`
+	}
+
+	if err := json.Unmarshal(message.Data, &messageData); err != nil {
+		log.Printf("Error parsing room message data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid message data format")
+		return
+	}
+
+	// Validate sender ID matches the client
+	if messageData.SenderID != client.userID {
+		sendErrorResponse(client, "SENDER_MISMATCH", "Sender ID must match authenticated user")
+		return
+	}
+
+	// Broadcast message to room participants
+
+	broadcastToRoomExceptSender(roomID, client.userID, "room_message", messageData)
+}
+
+// broadcastToRoomExceptSender broadcasts a message to all room participants except the sender
+func broadcastToRoomExceptSender(roomID, senderID, eventType string, data interface{}) {
+	// Marshal the data
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("Error marshaling broadcast data: %v", err)
+		return
+	}
+
+	// Create the message
+	broadcastMessage := Message{
+		Channel: fmt.Sprintf("room-%s", roomID),
+		Event:   eventType,
+		Data:    jsonData,
+	}
+
+	// Send to all clients subscribed to this room channel, except the sender
+	mutex.RLock()
+	var clientsToRemove []*Client
+	for client := range clients {
+		if client.isSubscribed(fmt.Sprintf("room-%s", roomID)) && client.userID != senderID {
+			err := client.conn.WriteJSON(broadcastMessage)
+			if err != nil {
+				log.Printf("Error sending message to client %s: %v", client.userID, err)
+				client.conn.Close()
+				clientsToRemove = append(clientsToRemove, client)
+			}
+		}
+	}
+	mutex.RUnlock()
+
+	// Remove clients that encountered errors
+	if len(clientsToRemove) > 0 {
+		mutex.Lock()
+		for _, client := range clientsToRemove {
+			delete(clients, client)
+		}
+		mutex.Unlock()
+	}
+
+	// Message broadcasted successfully
+}
+
+func handleLegacySync(client *Client, message Message) {
+	// Legacy sync event
+
+	// Extract chat ID and validate
+	chatID := strings.TrimPrefix(message.Channel, "sync-")
+	if !validateChatID(chatID) {
+		log.Printf("Invalid chat ID format: %s", chatID)
+		return
+	}
+
+	// Parse sync data
+	var syncData SyncData
+	if err := json.Unmarshal(message.Data, &syncData); err != nil {
+		log.Printf("Error parsing sync data: %v", err)
+		return
+	}
+
+	// Broadcast legacy sync
+
+	// Broadcast the original message (maintain backward compatibility)
+	broadcast <- message
+}
+
+func handleSyncRoomState(client *Client, message Message) {
+	var roomData struct {
+		RoomID       string `json:"roomId"`
+		HostID       string `json:"hostId"`
+		RoomName     string `json:"roomName"`
+		Participants []struct {
+			UserID string `json:"userId"`
+			Role   string `json:"role"`
+		} `json:"participants"`
+	}
+
+	if err := json.Unmarshal(message.Data, &roomData); err != nil {
+		log.Printf("Error parsing room sync data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid room sync data format")
+		return
+	}
+
+	if client.userID == "" {
+		sendErrorResponse(client, "NO_USER_ID", "User ID required to sync room state")
+		return
+	}
+
+	// Validate that the client is in the participants list
+	var clientRole string
+	var isParticipant bool
+	for _, p := range roomData.Participants {
+		if p.UserID == client.userID {
+			clientRole = p.Role
+			isParticipant = true
+			break
+		}
+	}
+
+	if !isParticipant {
+		sendErrorResponse(client, "NOT_PARTICIPANT", "User is not a participant in this room")
+		return
+	}
+
+	// Create or update room in WebSocket server's memory
+	roomMutex.Lock()
+	room := &Room{
+		ID:           roomData.RoomID,
+		HostID:       roomData.HostID,
+		Name:         roomData.RoomName,
+		Participants: make(map[string]string),
+		IsActive:     true,
+		CreatedAt:    time.Now(),
+		CurrentVideo: SyncData{},
+	}
+
+	// Add all participants
+	for _, p := range roomData.Participants {
+		room.Participants[p.UserID] = p.Role
+	}
+
+	rooms[roomData.RoomID] = room
+	roomMutex.Unlock()
+
+	// Subscribe client to room with their role
+	client.joinRoomAsClient(roomData.RoomID, clientRole)
+	client.subscribe(fmt.Sprintf("room-%s", roomData.RoomID))
+
+	// Send confirmation back to client
+	confirmationData, _ := json.Marshal(map[string]interface{}{
+		"roomId":   roomData.RoomID,
+		"role":     clientRole,
+		"synced":   true,
+		"hostId":   roomData.HostID,
+		"participants": len(roomData.Participants),
+	})
+
+	responseMessage := Message{
+		Channel: fmt.Sprintf("room-%s", roomData.RoomID),
+		Event:   "room_state_synced",
+		Data:    confirmationData,
+	}
+
+	if err := client.conn.WriteJSON(responseMessage); err != nil {
+		log.Printf("Error sending room sync confirmation: %v", err)
+	}
+
+	// Room state synchronized
 }
 
 // handleClient manages the connection for an individual client.
@@ -111,36 +741,33 @@ func handleClient(client *Client) {
 			break
 		}
 
-		log.Printf("Received message: %+v", message)
+		// Message received
 
 		// Handle messages based on the Event field.
 		switch message.Event {
 		case "subscribe":
-			log.Printf("Handling subscribe event for channel: %s", message.Channel)
 			client.subscribe(message.Channel)
 		case "unsubscribe":
-			log.Printf("Handling unsubscribe event for channel: %s", message.Channel)
 			client.unsubscribe(message.Channel)
+		// NEW ROOM EVENTS
+		case "create_room":
+			handleCreateRoom(client, message)
+		case "join_room":
+			handleJoinRoom(client, message)
+		case "leave_room":
+			handleLeaveRoom(client, message)
+		case "host_sync":
+			handleHostSync(client, message)
+		case "transfer_host":
+			handleTransferHost(client, message)
+		case "room_message":
+			handleRoomMessage(client, message)
+		case "sync_room_state":
+			handleSyncRoomState(client, message)
+		// LEGACY SUPPORT
 		case "sync":
-			log.Printf("Handling sync event for channel: %s", message.Channel)
-			// Validate chat ID format.
-			chatID := strings.TrimPrefix(message.Channel, "sync-")
-			if !validateChatID(chatID) {
-				log.Printf("Invalid chat ID format: %s", chatID)
-				continue
-			}
-			// Parse sync data.
-			var syncData SyncData
-			if err := json.Unmarshal(message.Data, &syncData); err != nil {
-				log.Printf("Error parsing sync data: %v", err)
-				continue
-			}
-			// Log the sync message details.
-			log.Printf("Broadcasting sync message - Time: %.2f, State: %s", syncData.Timestamp, syncData.State)
-			// Broadcast the original message.
-			broadcast <- message
+			handleLegacySync(client, message)
 		case "incoming_message", "new_message", "new_friend", "incoming_friend_request", "friend_request_denied", "friend_request_accepted", "friend_removed":
-			log.Printf("Handling %s event for channel: %s", message.Event, message.Channel)
 			// Broadcast the message to clients subscribed to the channel
 			broadcast <- message
 		default:
@@ -151,12 +778,12 @@ func handleClient(client *Client) {
 
 // handleConnections upgrades the HTTP connection to a WebSocket and registers the client.
 func handleConnections(w http.ResponseWriter, r *http.Request) {
-	// Extract userID from query parameters (or headers)
-	// userID := r.URL.Query().Get("userID")
-	// if userID == "" {
-	// 	http.Error(w, "Unauthorized", http.StatusUnauthorized)
-	// 	return
-	// }
+	// Extract userID from query parameters
+	userID := r.URL.Query().Get("userID")
+	if userID == "" {
+		http.Error(w, "UserID required in query parameters", http.StatusBadRequest)
+		return
+	}
 
 	// Upgrade the HTTP connection to a WebSocket connection.
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -169,10 +796,11 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	client := &Client{
 		conn:     conn,
 		channels: make(map[string]bool),
-		// userID:   userID,
+		userID:   userID,
+		rooms:    make(map[string]string),
 	}
 
-	log.Printf("New client connected from: %s", conn.RemoteAddr())
+	log.Printf("New client connected from: %s with userID: %s", conn.RemoteAddr(), userID)
 
 	// Register the client.
 	register <- client
@@ -191,14 +819,24 @@ func handleMessages() {
 		select {
 		case client := <-register:
 			// Register a new client.
-			log.Printf("New client registered from: %s", client.conn.RemoteAddr())
 			mutex.Lock()
 			clients[client] = true
 			mutex.Unlock()
 
 		case client := <-unregister:
 			// Unregister a client.
-			log.Printf("Client unregistered from: %s", client.conn.RemoteAddr())
+			log.Printf("Client unregistered from: %s with userID: %s", client.conn.RemoteAddr(), client.userID)
+
+			// Remove client from all rooms
+			for roomID := range client.rooms {
+				if err := leaveRoom(roomID, client.userID); err != nil {
+					log.Printf("Error removing user %s from room %s during disconnect: %v", client.userID, roomID, err)
+				}
+			}
+
+			// Clean up empty rooms
+			cleanupEmptyRooms()
+
 			mutex.Lock()
 			if _, ok := clients[client]; ok {
 				delete(clients, client)
@@ -208,7 +846,6 @@ func handleMessages() {
 
 		case message := <-broadcast:
 			// Broadcast a message to all subscribed clients.
-			log.Printf("Broadcasting message to channel %s subscribers", message.Channel)
 			mutex.RLock()
 			var clientsToRemove []*Client
 			for client := range clients {
