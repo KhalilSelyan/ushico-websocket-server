@@ -25,6 +25,7 @@ type Client struct {
 	conn     *websocket.Conn   // The WebSocket connection.
 	channels map[string]bool   // The channels the client is subscribed to.
 	mu       sync.Mutex        // Mutex to protect the channels map.
+	writeMu  sync.Mutex        // Mutex to protect WebSocket writes.
 	userID   string            // User identifier for the client
 	rooms    map[string]string // roomID -> role mapping
 }
@@ -102,6 +103,20 @@ func (c *Client) isSubscribed(channel string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.channels[channel]
+}
+
+// safeWriteJSON safely writes JSON to the WebSocket connection with proper locking.
+func (c *Client) safeWriteJSON(v interface{}) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.conn.WriteJSON(v)
+}
+
+// safeWriteControl safely writes control messages to the WebSocket connection with proper locking.
+func (c *Client) safeWriteControl(messageType int, data []byte, deadline time.Time) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.conn.WriteControl(messageType, data, deadline)
 }
 
 // validateChatID checks if the chat ID is in the expected format (e.g., "user1--user2").
@@ -299,7 +314,7 @@ func sendErrorResponse(client *Client, errorCode, message string) {
 		Data:    errorData,
 	}
 
-	if err := client.conn.WriteJSON(errorMessage); err != nil {
+	if err := client.safeWriteJSON(errorMessage); err != nil {
 		log.Printf("Error sending error response to client: %v", err)
 	}
 }
@@ -588,7 +603,7 @@ func broadcastToRoomExceptSender(roomID, senderID, eventType string, data interf
 	var clientsToRemove []*Client
 	for client := range clients {
 		if client.isSubscribed(fmt.Sprintf("room-%s", roomID)) && client.userID != senderID {
-			err := client.conn.WriteJSON(broadcastMessage)
+			err := client.safeWriteJSON(broadcastMessage)
 			if err != nil {
 				log.Printf("Error sending message to client %s: %v", client.userID, err)
 				client.conn.Close()
@@ -712,7 +727,7 @@ func handleSyncRoomState(client *Client, message Message) {
 		Data:    confirmationData,
 	}
 
-	if err := client.conn.WriteJSON(responseMessage); err != nil {
+	if err := client.safeWriteJSON(responseMessage); err != nil {
 		log.Printf("Error sending room sync confirmation: %v", err)
 	}
 
@@ -898,7 +913,7 @@ func broadcastToSpecificUser(userID, eventType string, data interface{}) {
 	mutex.RLock()
 	for client := range clients {
 		if client.userID == userID {
-			if err := client.conn.WriteJSON(userMessage); err != nil {
+			if err := client.safeWriteJSON(userMessage); err != nil {
 				log.Printf("Error sending message to user %s: %v", userID, err)
 			}
 			break
@@ -1015,7 +1030,7 @@ func broadcastToRoom(roomID, eventType string, data interface{}) {
 	var clientsToRemove []*Client
 	for client := range clients {
 		if client.isSubscribed(fmt.Sprintf("room-%s", roomID)) {
-			err := client.conn.WriteJSON(broadcastMessage)
+			err := client.safeWriteJSON(broadcastMessage)
 			if err != nil {
 				log.Printf("Error sending message to client %s: %v", client.userID, err)
 				client.conn.Close()
@@ -1139,13 +1154,31 @@ func handleGetRoomPresence(client *Client, message Message) {
 		return
 	}
 
-	// Get current presence state
+	// Get current presence state - validate against actually connected users
 	roomMutex.RLock()
 	var presenceData map[string]string
 	if room, exists := rooms[requestData.RoomID]; exists {
 		presenceData = make(map[string]string)
+
+		// Get list of currently connected userIDs
+		mutex.RLock()
+		connectedUsers := make(map[string]bool)
+		for client := range clients {
+			if client.userID != "" {
+				connectedUsers[client.userID] = true
+			}
+		}
+		mutex.RUnlock()
+
 		for userID, state := range room.Presence {
-			presenceData[userID] = state
+			// If user is not connected, force them to offline regardless of stored state
+			if !connectedUsers[userID] {
+				presenceData[userID] = "offline"
+				// Also update the stored state to prevent future stale data
+				room.Presence[userID] = "offline"
+			} else {
+				presenceData[userID] = state
+			}
 		}
 	}
 	roomMutex.RUnlock()
@@ -1162,7 +1195,7 @@ func handleGetRoomPresence(client *Client, message Message) {
 		Data:    responseData,
 	}
 
-	if err := client.conn.WriteJSON(responseMessage); err != nil {
+	if err := client.safeWriteJSON(responseMessage); err != nil {
 		log.Printf("Error sending presence status: %v", err)
 	}
 }
@@ -1335,7 +1368,7 @@ func handleMessages() {
 					// Send to other room participants
 					for otherClient := range clients {
 						if otherClient != client && otherClient.isSubscribed(fmt.Sprintf("room-%s", roomID)) {
-							otherClient.conn.WriteJSON(offlineMessage)
+							otherClient.safeWriteJSON(offlineMessage)
 						}
 					}
 				}
@@ -1362,7 +1395,7 @@ func handleMessages() {
 			var clientsToRemove []*Client
 			for client := range clients {
 				if client.isSubscribed(message.Channel) {
-					err := client.conn.WriteJSON(message)
+				err := client.safeWriteJSON(message)
 					if err != nil {
 						log.Printf("Error sending message to client: %v", err)
 						client.conn.Close()
@@ -1386,7 +1419,7 @@ func handleMessages() {
 			mutex.RLock()
 			var clientsToRemove []*Client
 			for client := range clients {
-				err := client.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second))
+			err := client.safeWriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second))
 				if err != nil {
 					log.Printf("Ping failed for client %s: %v", client.conn.RemoteAddr(), err)
 					client.conn.Close()
