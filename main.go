@@ -1202,6 +1202,39 @@ func handleGetRoomPresence(client *Client, message Message) {
 	}
 }
 
+// handleStreamModeChanged broadcasts when host switches between URL and WebRTC streaming modes
+func handleStreamModeChanged(client *Client, message Message) {
+	var modeData struct {
+		RoomID    string `json:"roomId"`
+		UserID    string `json:"userId"`
+		Mode      string `json:"mode"` // "url" or "webrtc"
+		Timestamp string `json:"timestamp"`
+	}
+
+	if err := json.Unmarshal(message.Data, &modeData); err != nil {
+		log.Printf("Error parsing stream mode data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid stream mode data format")
+		return
+	}
+
+	// Validate mode
+	if modeData.Mode != "url" && modeData.Mode != "webrtc" {
+		sendErrorResponse(client, "INVALID_MODE", "Mode must be 'url' or 'webrtc'")
+		return
+	}
+
+	// Validate user is host in the room
+	if err := validateHostPermission(modeData.RoomID, client.userID, "change stream mode"); err != nil {
+		log.Printf("Permission denied for user %s: %v", client.userID, err)
+		sendErrorResponse(client, "PERMISSION_DENIED", "Only host can change stream mode")
+		return
+	}
+
+	// Broadcast to all room participants except sender
+	broadcastToRoomExceptSender(modeData.RoomID, client.userID, "stream_mode_changed", modeData)
+	log.Printf("Stream mode changed to %s in room %s by %s", modeData.Mode, modeData.RoomID, client.userID)
+}
+
 // handleClient manages the connection for an individual client.
 func handleClient(client *Client) {
 	defer func() {
@@ -1284,6 +1317,9 @@ func handleClient(client *Client) {
 			handleUserPresenceUpdate(client, message)
 		case "get_room_presence":
 			handleGetRoomPresence(client, message)
+		// WEBRTC STREAMING
+		case "stream_mode_changed":
+			handleStreamModeChanged(client, message)
 		// LEGACY SUPPORT
 		case "sync":
 			handleLegacySync(client, message)
