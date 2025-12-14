@@ -22,12 +22,13 @@ var upgrader = websocket.Upgrader{
 
 // Client represents a connected WebSocket client.
 type Client struct {
-	conn     *websocket.Conn   // The WebSocket connection.
-	channels map[string]bool   // The channels the client is subscribed to.
-	mu       sync.Mutex        // Mutex to protect the channels map.
-	writeMu  sync.Mutex        // Mutex to protect WebSocket writes.
-	userID   string            // User identifier for the client
-	rooms    map[string]string // roomID -> role mapping
+	conn         *websocket.Conn   // The WebSocket connection.
+	channels     map[string]bool   // The channels the client is subscribed to.
+	mu           sync.Mutex        // Mutex to protect the channels map.
+	writeMu      sync.Mutex        // Mutex to protect WebSocket writes.
+	userID       string            // User identifier for the client
+	rooms        map[string]string // roomID -> role mapping
+	lastPongTime time.Time         // Last time a pong was received from this client
 }
 
 // Message represents the structure of messages sent over WebSocket.
@@ -1249,6 +1250,7 @@ func handleClient(client *Client) {
 
 	// Setup pong handler to reset read deadline on receiving pong messages.
 	client.conn.SetPongHandler(func(string) error {
+		client.lastPongTime = time.Now()
 		client.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil
 	})
@@ -1350,10 +1352,11 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 
 	// Create a new client.
 	client := &Client{
-		conn:     conn,
-		channels: make(map[string]bool),
-		userID:   userID,
-		rooms:    make(map[string]string),
+		conn:         conn,
+		channels:     make(map[string]bool),
+		userID:       userID,
+		rooms:        make(map[string]string),
+		lastPongTime: time.Now(), // Initialize to now, will be updated on pong
 	}
 
 	log.Printf("New client connected from: %s with userID: %s", conn.RemoteAddr(), userID)
@@ -1454,10 +1457,23 @@ func handleMessages() {
 
 		case <-ticker.C:
 			// Send ping messages to all clients for keep-alive.
+			// Also check for stale connections that haven't responded to pongs.
 			mutex.RLock()
 			var clientsToRemove []*Client
+			pongTimeout := 2 * time.Minute // Consider client dead if no pong in 2 minutes
+
 			for client := range clients {
-			err := client.safeWriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second))
+				// Check if client hasn't responded to pongs recently
+				if time.Since(client.lastPongTime) > pongTimeout {
+					log.Printf("Client %s (user %s) timed out - no pong in %v",
+						client.conn.RemoteAddr(), client.userID, time.Since(client.lastPongTime))
+					client.conn.Close()
+					clientsToRemove = append(clientsToRemove, client)
+					continue
+				}
+
+				// Send ping
+				err := client.safeWriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second))
 				if err != nil {
 					log.Printf("Ping failed for client %s: %v", client.conn.RemoteAddr(), err)
 					client.conn.Close()
