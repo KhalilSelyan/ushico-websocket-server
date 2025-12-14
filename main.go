@@ -1069,14 +1069,16 @@ func handleRoomAnnouncement(client *Client, message Message) {
 
 	// Validate announcement type
 	validTypes := map[string]bool{
-		"user_joined":     true,
-		"user_left":       true,
-		"video_changed":   true,
-		"host_paused":     true,
-		"host_resumed":    true,
-		"host_transferred": true,
-		"room_created":    true,
-		"video_seeked":    true,
+		"user_joined":           true,
+		"user_left":             true,
+		"video_changed":         true,
+		"host_paused":           true,
+		"host_resumed":          true,
+		"host_transferred":      true,
+		"room_created":          true,
+		"video_seeked":          true,
+		"host_started_streaming": true,
+		"host_stopped_streaming": true,
 	}
 
 	if !validTypes[announcementData.Type] {
