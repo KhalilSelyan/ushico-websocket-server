@@ -13,11 +13,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Configure the WebSocket upgrader with buffer sizes and CORS policy.
+// Configure the WebSocket upgrader with buffer sizes, CORS policy, and compression.
 var upgrader = websocket.Upgrader{
-	CheckOrigin:     func(r *http.Request) bool { return true }, // Allow all origins
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+	CheckOrigin:       func(r *http.Request) bool { return true }, // Allow all origins
+	ReadBufferSize:    4096,                                       // Increased from 1024
+	WriteBufferSize:   4096,                                       // Increased from 1024
+	EnableCompression: true,                                       // Enable permessage-deflate compression
 }
 
 // Client represents a connected WebSocket client.
@@ -29,6 +30,7 @@ type Client struct {
 	userID       string            // User identifier for the client
 	rooms        map[string]string // roomID -> role mapping
 	lastPongTime time.Time         // Last time a pong was received from this client
+	send         chan Message      // Buffered channel for outgoing messages
 }
 
 // Message represents the structure of messages sent over WebSocket.
@@ -76,27 +78,48 @@ type ErrorResponse struct {
 
 // Global variables for managing clients and messages.
 var (
-	clients    = make(map[*Client]bool) // Map of connected clients.
-	broadcast  = make(chan Message)     // Channel for broadcasting messages.
-	register   = make(chan *Client)     // Channel for registering new clients.
-	unregister = make(chan *Client)     // Channel for unregistering clients.
-	mutex      = &sync.RWMutex{}        // Read-write mutex to protect the clients map.
-	rooms      = make(map[string]*Room) // Active rooms.
-	roomMutex  = &sync.RWMutex{}        // Protect rooms map.
+	clients      = make(map[*Client]bool)              // Map of connected clients.
+	broadcast    = make(chan Message, 256)             // Buffered channel for broadcasting messages.
+	register     = make(chan *Client)                  // Channel for registering new clients.
+	unregister   = make(chan *Client)                  // Channel for unregistering clients.
+	mutex        = &sync.RWMutex{}                     // Read-write mutex to protect the clients map.
+	rooms        = make(map[string]*Room)              // Active rooms.
+	roomMutex    = &sync.RWMutex{}                     // Protect rooms map.
+	channelSubs  = make(map[string]map[*Client]bool)   // Channel -> subscribed clients (for O(1) lookup).
+	channelMutex = &sync.RWMutex{}                     // Protect channelSubs map.
 )
 
 // Subscribe adds the client to the specified channel.
 func (c *Client) subscribe(channel string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.channels[channel] = true
+	c.mu.Unlock()
+
+	// Update global channel subscriptions map for O(1) lookups
+	channelMutex.Lock()
+	if channelSubs[channel] == nil {
+		channelSubs[channel] = make(map[*Client]bool)
+	}
+	channelSubs[channel][c] = true
+	channelMutex.Unlock()
 }
 
 // Unsubscribe removes the client from the specified channel.
 func (c *Client) unsubscribe(channel string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	delete(c.channels, channel)
+	c.mu.Unlock()
+
+	// Update global channel subscriptions map
+	channelMutex.Lock()
+	if channelSubs[channel] != nil {
+		delete(channelSubs[channel], c)
+		// Clean up empty channel maps
+		if len(channelSubs[channel]) == 0 {
+			delete(channelSubs, channel)
+		}
+	}
+	channelMutex.Unlock()
 }
 
 // isSubscribed checks if the client is subscribed to the specified channel.
@@ -104,6 +127,44 @@ func (c *Client) isSubscribed(channel string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.channels[channel]
+}
+
+// unsubscribeAll removes the client from all channels (used on disconnect).
+func (c *Client) unsubscribeAll() {
+	c.mu.Lock()
+	channels := make([]string, 0, len(c.channels))
+	for channel := range c.channels {
+		channels = append(channels, channel)
+	}
+	c.mu.Unlock()
+
+	// Remove from global channel subscriptions
+	channelMutex.Lock()
+	for _, channel := range channels {
+		if channelSubs[channel] != nil {
+			delete(channelSubs[channel], c)
+			if len(channelSubs[channel]) == 0 {
+				delete(channelSubs, channel)
+			}
+		}
+	}
+	channelMutex.Unlock()
+}
+
+// writePump pumps messages from the send channel to the WebSocket connection.
+// Runs in its own goroutine per client.
+func (c *Client) writePump() {
+	defer func() {
+		c.conn.Close()
+	}()
+
+	for message := range c.send {
+		err := c.safeWriteJSON(message)
+		if err != nil {
+			log.Printf("Error sending message to client %s: %v", c.userID, err)
+			return
+		}
+	}
 }
 
 // safeWriteJSON safely writes JSON to the WebSocket connection with proper locking.
@@ -599,31 +660,22 @@ func broadcastToRoomExceptSender(roomID, senderID, eventType string, data interf
 		Data:    jsonData,
 	}
 
-	// Send to all clients subscribed to this room channel, except the sender
-	mutex.RLock()
-	var clientsToRemove []*Client
-	for client := range clients {
-		if client.isSubscribed(fmt.Sprintf("room-%s", roomID)) && client.userID != senderID {
-			err := client.safeWriteJSON(broadcastMessage)
-			if err != nil {
-				log.Printf("Error sending message to client %s: %v", client.userID, err)
-				client.conn.Close()
-				clientsToRemove = append(clientsToRemove, client)
+	// Use O(1) channel lookup to find subscribers
+	channel := fmt.Sprintf("room-%s", roomID)
+	channelMutex.RLock()
+	subscribers := channelSubs[channel]
+	for client := range subscribers {
+		if client.userID != senderID {
+			// Non-blocking send to client's buffered channel
+			select {
+			case client.send <- broadcastMessage:
+				// Message queued successfully
+			default:
+				log.Printf("Client %s send buffer full, dropping message", client.userID)
 			}
 		}
 	}
-	mutex.RUnlock()
-
-	// Remove clients that encountered errors
-	if len(clientsToRemove) > 0 {
-		mutex.Lock()
-		for _, client := range clientsToRemove {
-			delete(clients, client)
-		}
-		mutex.Unlock()
-	}
-
-	// Message broadcasted successfully
+	channelMutex.RUnlock()
 }
 
 func handleLegacySync(client *Client, message Message) {
@@ -910,12 +962,15 @@ func broadcastToSpecificUser(userID, eventType string, data interface{}) {
 		Data:    jsonData,
 	}
 
-	// Find and send to the specific user
+	// Find and send to the specific user via their send channel
 	mutex.RLock()
 	for client := range clients {
 		if client.userID == userID {
-			if err := client.safeWriteJSON(userMessage); err != nil {
-				log.Printf("Error sending message to user %s: %v", userID, err)
+			select {
+			case client.send <- userMessage:
+				// Message queued successfully
+			default:
+				log.Printf("Client %s send buffer full, dropping user-specific message", userID)
 			}
 			break
 		}
@@ -1026,29 +1081,20 @@ func broadcastToRoom(roomID, eventType string, data interface{}) {
 		Data:    jsonData,
 	}
 
-	// Send to all clients subscribed to this room channel
-	mutex.RLock()
-	var clientsToRemove []*Client
-	for client := range clients {
-		if client.isSubscribed(fmt.Sprintf("room-%s", roomID)) {
-			err := client.safeWriteJSON(broadcastMessage)
-			if err != nil {
-				log.Printf("Error sending message to client %s: %v", client.userID, err)
-				client.conn.Close()
-				clientsToRemove = append(clientsToRemove, client)
-			}
+	// Use O(1) channel lookup to find subscribers
+	channel := fmt.Sprintf("room-%s", roomID)
+	channelMutex.RLock()
+	subscribers := channelSubs[channel]
+	for client := range subscribers {
+		// Non-blocking send to client's buffered channel
+		select {
+		case client.send <- broadcastMessage:
+			// Message queued successfully
+		default:
+			log.Printf("Client %s send buffer full, dropping message", client.userID)
 		}
 	}
-	mutex.RUnlock()
-
-	// Remove clients that encountered errors
-	if len(clientsToRemove) > 0 {
-		mutex.Lock()
-		for _, client := range clientsToRemove {
-			delete(clients, client)
-		}
-		mutex.Unlock()
-	}
+	channelMutex.RUnlock()
 }
 
 // handleRoomAnnouncement broadcasts system messages to room participants
@@ -1350,13 +1396,14 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create a new client.
+	// Create a new client with buffered send channel.
 	client := &Client{
 		conn:         conn,
 		channels:     make(map[string]bool),
 		userID:       userID,
 		rooms:        make(map[string]string),
 		lastPongTime: time.Now(), // Initialize to now, will be updated on pong
+		send:         make(chan Message, 64), // Buffered channel for outgoing messages
 	}
 
 	log.Printf("New client connected from: %s with userID: %s", conn.RemoteAddr(), userID)
@@ -1364,7 +1411,10 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	// Register the client.
 	register <- client
 
-	// Start handling messages from the client.
+	// Start the write pump in its own goroutine.
+	go client.writePump()
+
+	// Start handling messages from the client (blocks until client disconnects).
 	handleClient(client)
 }
 
@@ -1392,7 +1442,7 @@ func handleMessages() {
 				roomMutex.Lock()
 				if room, exists := rooms[roomID]; exists && room.Presence != nil {
 					room.Presence[client.userID] = "offline"
-					// Broadcast offline status
+					// Broadcast offline status using channelSubs for O(1) lookup
 					offlineData, _ := json.Marshal(map[string]interface{}{
 						"roomId":        roomID,
 						"userId":        client.userID,
@@ -1406,12 +1456,19 @@ func handleMessages() {
 						Data:    offlineData,
 					}
 
-					// Send to other room participants
-					for otherClient := range clients {
-						if otherClient != client && otherClient.isSubscribed(fmt.Sprintf("room-%s", roomID)) {
-							otherClient.safeWriteJSON(offlineMessage)
+					// Send to other room participants using channelSubs
+					channel := fmt.Sprintf("room-%s", roomID)
+					channelMutex.RLock()
+					for otherClient := range channelSubs[channel] {
+						if otherClient != client {
+							select {
+							case otherClient.send <- offlineMessage:
+							default:
+								log.Printf("Client %s send buffer full during presence update", otherClient.userID)
+							}
 						}
 					}
+					channelMutex.RUnlock()
 				}
 				roomMutex.Unlock()
 
@@ -1423,37 +1480,32 @@ func handleMessages() {
 			// Clean up empty rooms
 			cleanupEmptyRooms()
 
+			// Remove from channelSubs map
+			client.unsubscribeAll()
+
 			mutex.Lock()
 			if _, ok := clients[client]; ok {
 				delete(clients, client)
-				client.conn.Close()
+				// Close send channel to stop writePump goroutine
+				close(client.send)
 			}
 			mutex.Unlock()
 
 		case message := <-broadcast:
-			// Broadcast a message to all subscribed clients.
-			mutex.RLock()
-			var clientsToRemove []*Client
-			for client := range clients {
-				if client.isSubscribed(message.Channel) {
-				err := client.safeWriteJSON(message)
-					if err != nil {
-						log.Printf("Error sending message to client: %v", err)
-						client.conn.Close()
-						clientsToRemove = append(clientsToRemove, client)
-					}
+			// Broadcast a message to all subscribed clients using O(1) channel lookup.
+			channelMutex.RLock()
+			subscribers := channelSubs[message.Channel]
+			for client := range subscribers {
+				// Non-blocking send to client's buffered channel
+				select {
+				case client.send <- message:
+					// Message queued successfully
+				default:
+					// Client's send buffer is full, log and skip
+					log.Printf("Client %s send buffer full, dropping message", client.userID)
 				}
 			}
-			mutex.RUnlock()
-
-			// Remove clients that encountered errors.
-			if len(clientsToRemove) > 0 {
-				mutex.Lock()
-				for _, client := range clientsToRemove {
-					delete(clients, client)
-				}
-				mutex.Unlock()
-			}
+			channelMutex.RUnlock()
 
 		case <-ticker.C:
 			// Send ping messages to all clients for keep-alive.
