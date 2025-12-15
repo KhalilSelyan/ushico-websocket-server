@@ -1282,6 +1282,100 @@ func handleStreamModeChanged(client *Client, message Message) {
 	log.Printf("Stream mode changed to %s in room %s by %s", modeData.Mode, modeData.RoomID, client.userID)
 }
 
+// handleWebcamJoin broadcasts when a user joins the webcam session
+func handleWebcamJoin(client *Client, message Message) {
+	var webcamData struct {
+		RoomID       string `json:"roomId"`
+		UserID       string `json:"userId"`
+		UserName     string `json:"userName"`
+		UserImage    string `json:"userImage"`
+		AudioEnabled bool   `json:"audioEnabled"`
+		VideoEnabled bool   `json:"videoEnabled"`
+		IsHub        bool   `json:"isHub"`
+		Timestamp    string `json:"timestamp"`
+	}
+
+	if err := json.Unmarshal(message.Data, &webcamData); err != nil {
+		log.Printf("Error parsing webcam join data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid webcam join data format")
+		return
+	}
+
+	// Validate user is in the room
+	if !client.isInRoom(webcamData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to join webcam session")
+		return
+	}
+
+	// Broadcast to all room participants except sender
+	broadcastToRoomExceptSender(webcamData.RoomID, client.userID, "webcam_join", webcamData)
+	log.Printf("User %s joined webcam in room %s (isHub: %v)", webcamData.UserName, webcamData.RoomID, webcamData.IsHub)
+}
+
+// handleWebcamLeave broadcasts when a user leaves the webcam session
+func handleWebcamLeave(client *Client, message Message) {
+	var webcamData struct {
+		RoomID    string `json:"roomId"`
+		UserID    string `json:"userId"`
+		Timestamp string `json:"timestamp"`
+	}
+
+	if err := json.Unmarshal(message.Data, &webcamData); err != nil {
+		log.Printf("Error parsing webcam leave data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid webcam leave data format")
+		return
+	}
+
+	// Broadcast to all room participants except sender
+	broadcastToRoomExceptSender(webcamData.RoomID, client.userID, "webcam_leave", webcamData)
+	log.Printf("User %s left webcam in room %s", webcamData.UserID, webcamData.RoomID)
+}
+
+// handleWebcamToggle broadcasts when a user toggles audio/video
+func handleWebcamToggle(client *Client, message Message) {
+	var webcamData struct {
+		RoomID       string `json:"roomId"`
+		UserID       string `json:"userId"`
+		AudioEnabled *bool  `json:"audioEnabled,omitempty"`
+		VideoEnabled *bool  `json:"videoEnabled,omitempty"`
+		Timestamp    string `json:"timestamp"`
+	}
+
+	if err := json.Unmarshal(message.Data, &webcamData); err != nil {
+		log.Printf("Error parsing webcam toggle data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid webcam toggle data format")
+		return
+	}
+
+	// Validate user is in the room
+	if !client.isInRoom(webcamData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to toggle webcam")
+		return
+	}
+
+	// Broadcast to all room participants except sender
+	broadcastToRoomExceptSender(webcamData.RoomID, client.userID, "webcam_toggle", webcamData)
+}
+
+// handleWebcamHubChange broadcasts when the webcam hub changes
+func handleWebcamHubChange(client *Client, message Message) {
+	var webcamData struct {
+		RoomID       string  `json:"roomId"`
+		NewHubUserId *string `json:"newHubUserId"`
+		Timestamp    string  `json:"timestamp"`
+	}
+
+	if err := json.Unmarshal(message.Data, &webcamData); err != nil {
+		log.Printf("Error parsing webcam hub change data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid webcam hub change data format")
+		return
+	}
+
+	// Broadcast to all room participants
+	broadcastToRoom(webcamData.RoomID, "webcam_hub_change", webcamData)
+	log.Printf("Webcam hub changed in room %s to user %v", webcamData.RoomID, webcamData.NewHubUserId)
+}
+
 // handleClient manages the connection for an individual client.
 func handleClient(client *Client) {
 	defer func() {
@@ -1368,6 +1462,15 @@ func handleClient(client *Client) {
 		// WEBRTC STREAMING
 		case "stream_mode_changed":
 			handleStreamModeChanged(client, message)
+		// PARTICIPANT WEBCAMS
+		case "webcam_join":
+			handleWebcamJoin(client, message)
+		case "webcam_leave":
+			handleWebcamLeave(client, message)
+		case "webcam_toggle":
+			handleWebcamToggle(client, message)
+		case "webcam_hub_change":
+			handleWebcamHubChange(client, message)
 		// LEGACY SUPPORT
 		case "sync":
 			handleLegacySync(client, message)
