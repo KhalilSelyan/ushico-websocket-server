@@ -1447,11 +1447,11 @@ func handleCinemaMoodChanged(client *Client, message Message) {
 		Brightness float64 `json:"brightness"`
 	}
 
-	if err := json.Unmarshal(message.Data, &moodData) {
+	err := json.Unmarshal(message.Data, &moodData)
+	if err != nil {
 		return
 	}
 
-	// Broadcast the mood change to other users in the room
 	broadcastToRoomExceptSender(moodData.RoomID, client.userID, "cinema_mood_changed", message.Data)
 }
 
