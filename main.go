@@ -223,14 +223,25 @@ func joinRoom(roomID, userID string) error {
 
 	room, exists := rooms[roomID]
 	if !exists {
-		return fmt.Errorf("room not found")
+		// Auto-create room in server memory if it doesn't exist
+		// (room was created via DB, not via WebSocket create_room)
+		room = &Room{
+			ID:            roomID,
+			Participants:  make(map[string]string),
+			Presence:      make(map[string]string),
+			CinemaAvatars: make(map[string]json.RawMessage),
+			IsActive:      true,
+			CreatedAt:     time.Now(),
+		}
+		rooms[roomID] = room
+		log.Printf("Auto-created room %s in server memory for user %s", roomID, userID)
 	}
 	if !room.IsActive {
 		return fmt.Errorf("room is not active")
 	}
 
 	room.Participants[userID] = "viewer"
-	room.Presence[userID] = "active" // User joins as active
+	room.Presence[userID] = "active"
 	return nil
 }
 
