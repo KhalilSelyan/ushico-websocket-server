@@ -1438,6 +1438,23 @@ func handleCinemaAnimation(client *Client, message Message) {
 	broadcastToRoomExceptSender(animData.RoomID, client.userID, "cinema_animation", message.Data)
 }
 
+// handleCinemaMoodChanged broadcasts mood lighting changes to the room
+func handleCinemaMoodChanged(client *Client, message Message) {
+	var moodData struct {
+		RoomID     string  `json:"roomId"`
+		UserID     string  `json:"userId"`
+		Color      string  `json:"color"`
+		Brightness float64 `json:"brightness"`
+	}
+
+	if err := json.Unmarshal(message.Data, &moodData) {
+		return
+	}
+
+	// Broadcast the mood change to other users in the room
+	broadcastToRoomExceptSender(moodData.RoomID, client.userID, "cinema_mood_changed", message.Data)
+}
+
 // handleGetCinemaAvatars sends all current avatar states to the requester (late joiner)
 func handleGetCinemaAvatars(client *Client, message Message) {
 	var req struct {
@@ -1583,6 +1600,8 @@ func handleClient(client *Client) {
 			handleGetCinemaAvatars(client, message)
 		case "cinema_animation":
 			handleCinemaAnimation(client, message)
+		case "cinema_mood_changed":
+			handleCinemaMoodChanged(client, message)
 		// APPLICATION-LEVEL HEARTBEAT
 		// Browser WebSocket API can't send protocol-level pings,
 		// so clients send JSON ping events to detect zombie connections.
