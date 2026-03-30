@@ -55,8 +55,9 @@ type Room struct {
 	HostID       string            `json:"hostId"`
 	Name         string            `json:"name"`
 	Participants map[string]string `json:"participants"` // userID -> role mapping
-	Presence     map[string]string `json:"presence"`     // userID -> presence state (active, away, offline)
-	IsActive     bool              `json:"isActive"`
+	Presence      map[string]string              `json:"presence"`      // userID -> presence state (active, away, offline)
+	CinemaAvatars map[string]json.RawMessage    `json:"cinemaAvatars"` // userID -> last avatar state
+	IsActive      bool                          `json:"isActive"`
 	CreatedAt    time.Time         `json:"createdAt"`
 	CurrentVideo SyncData          `json:"currentVideo"`
 }
@@ -1376,6 +1377,83 @@ func handleWebcamHubChange(client *Client, message Message) {
 	log.Printf("Webcam hub changed in room %s to user %v", webcamData.RoomID, webcamData.NewHubUserId)
 }
 
+// handleCinemaAvatarUpdate broadcasts avatar position to room and stores for late joiners
+func handleCinemaAvatarUpdate(client *Client, message Message) {
+	var avatarData struct {
+		RoomID   string  `json:"roomId"`
+		UserID   string  `json:"userId"`
+		UserName string  `json:"userName"`
+		PX       float64 `json:"px"`
+		PY       float64 `json:"py"`
+		PZ       float64 `json:"pz"`
+		RY       float64 `json:"ry"`
+		Anim     string  `json:"anim"`
+	}
+
+	if err := json.Unmarshal(message.Data, &avatarData); err != nil {
+		return
+	}
+
+	if !client.isInRoom(avatarData.RoomID) {
+		return
+	}
+
+	// Store last known state for late joiners
+	roomMutex.Lock()
+	if room, exists := rooms[avatarData.RoomID]; exists {
+		if room.CinemaAvatars == nil {
+			room.CinemaAvatars = make(map[string]json.RawMessage)
+		}
+		room.CinemaAvatars[client.userID] = message.Data
+	}
+	roomMutex.Unlock()
+
+	broadcastToRoomExceptSender(avatarData.RoomID, client.userID, "cinema_avatar_update", avatarData)
+}
+
+// handleGetCinemaAvatars sends all current avatar states to the requester (late joiner)
+func handleGetCinemaAvatars(client *Client, message Message) {
+	var req struct {
+		RoomID string `json:"roomId"`
+	}
+
+	if err := json.Unmarshal(message.Data, &req); err != nil {
+		return
+	}
+
+	roomMutex.RLock()
+	room, exists := rooms[req.RoomID]
+	var avatars []json.RawMessage
+	if exists && room.CinemaAvatars != nil {
+		for uid, state := range room.CinemaAvatars {
+			if uid != client.userID {
+				avatars = append(avatars, state)
+			}
+		}
+	}
+	roomMutex.RUnlock()
+
+	if avatars == nil {
+		avatars = []json.RawMessage{}
+	}
+
+	responseData, _ := json.Marshal(map[string]interface{}{
+		"roomId":  req.RoomID,
+		"avatars": avatars,
+	})
+
+	responseMsg := Message{
+		Channel: fmt.Sprintf("user-%s", client.userID),
+		Event:   "cinema_avatar_state",
+		Data:    responseData,
+	}
+
+	select {
+	case client.send <- responseMsg:
+	default:
+	}
+}
+
 // handleClient manages the connection for an individual client.
 func handleClient(client *Client) {
 	defer func() {
@@ -1471,6 +1549,11 @@ func handleClient(client *Client) {
 			handleWebcamToggle(client, message)
 		case "webcam_hub_change":
 			handleWebcamHubChange(client, message)
+		// CINEMA AVATARS
+		case "cinema_avatar_update":
+			handleCinemaAvatarUpdate(client, message)
+		case "get_cinema_avatars":
+			handleGetCinemaAvatars(client, message)
 		// APPLICATION-LEVEL HEARTBEAT
 		// Browser WebSocket API can't send protocol-level pings,
 		// so clients send JSON ping events to detect zombie connections.
@@ -1555,6 +1638,10 @@ func handleMessages() {
 				roomMutex.Lock()
 				if room, exists := rooms[roomID]; exists && room.Presence != nil {
 					room.Presence[client.userID] = "offline"
+					// Clean up cinema avatar state
+					if room.CinemaAvatars != nil {
+						delete(room.CinemaAvatars, client.userID)
+					}
 					// Broadcast offline status using channelSubs for O(1) lookup
 					offlineData, _ := json.Marshal(map[string]interface{}{
 						"roomId":        roomID,
