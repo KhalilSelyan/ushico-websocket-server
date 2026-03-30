@@ -1471,6 +1471,16 @@ func handleClient(client *Client) {
 			handleWebcamToggle(client, message)
 		case "webcam_hub_change":
 			handleWebcamHubChange(client, message)
+		// APPLICATION-LEVEL HEARTBEAT
+		// Browser WebSocket API can't send protocol-level pings,
+		// so clients send JSON ping events to detect zombie connections.
+		case "ping":
+			pongData, _ := json.Marshal(map[string]interface{}{})
+			pongMsg := Message{Channel: "system", Event: "pong", Data: pongData}
+			select {
+			case client.send <- pongMsg:
+			default:
+			}
 		// LEGACY SUPPORT
 		case "sync":
 			handleLegacySync(client, message)
