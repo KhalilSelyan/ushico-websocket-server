@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "events": {
+    "host_sync": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "timestamp": "number",
+        "url": "string",
+        "roomId": "string",
+        "state": "playing|paused",
+        "videoId": "string"
+      }
+    },
+    "room_video_state": {
+      "channel": "user-{userId}",
+      "fields": {
+        "roomId": "string",
+        "sync": "RoomSyncData|null"
+      }
+    },
+    "user_presence_updated": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "userName": "string",
+        "presenceState": "active|away|offline",
+        "timestamp": "string"
+      }
+    },
+    "room_presence_status": {
+      "channel": "user-{userId}",
+      "fields": {
+        "roomId": "string",
+        "participants": "Array<{ userId: string, userName: string, presenceState: active|away|offline }>"
+      }
+    },
+    "webcam_join": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "userName": "string",
+        "userImage": "string?",
+        "videoEnabled": "boolean",
+        "audioEnabled": "boolean"
+      }
+    },
+    "webcam_leave": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string"
+      }
+    },
+    "webcam_toggle": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "type": "audio|video",
+        "enabled": "boolean"
+      }
+    },
+    "cinema_avatar_update": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "userName": "string",
+        "px": "number",
+        "py": "number",
+        "pz": "number",
+        "ry": "number",
+        "anim": "string",
+        "avatarModel": "string?"
+      }
+    },
+    "cinema_avatar_state": {
+      "channel": "user-{userId}",
+      "fields": {
+        "roomId": "string",
+        "avatars": "Array<CinemaAvatarData>"
+      }
+    }
+  }
+}

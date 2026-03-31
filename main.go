@@ -591,17 +591,13 @@ func handleGetCurrentVideoState(client *Client, message Message) {
 	room, exists := rooms[req.RoomID]
 	roomMutex.RUnlock()
 
-	var syncState interface{}
+	var syncState *SyncData
 	if exists && room.CurrentVideo.VideoID != "" {
-		syncState = room.CurrentVideo
-	} else {
-		syncState = nil
+		current := room.CurrentVideo
+		syncState = &current
 	}
 
-	broadcastToSpecificUser(client.userID, "room_video_state", map[string]interface{}{
-		"roomId": req.RoomID,
-		"sync":   syncState,
-	})
+	broadcastToSpecificUser(client.userID, "room_video_state", RoomVideoStateResponse{RoomID: req.RoomID, Sync: syncState})
 }
 
 func handleTransferHost(client *Client, message Message) {
@@ -1184,13 +1180,7 @@ func handleRoomAnnouncement(client *Client, message Message) {
 
 // handleUserPresenceUpdate updates and broadcasts user presence status
 func handleUserPresenceUpdate(client *Client, message Message) {
-	var presenceData struct {
-		RoomID        string `json:"roomId"`
-		UserID        string `json:"userId"`
-		UserName      string `json:"userName"`
-		PresenceState string `json:"presenceState"` // "active", "away", "offline"
-		Timestamp     string `json:"timestamp"`
-	}
+	var presenceData PresenceUpdateData
 
 	if err := json.Unmarshal(message.Data, &presenceData); err != nil {
 		log.Printf("Error parsing presence data: %v", err)
@@ -1250,9 +1240,9 @@ func handleGetRoomPresence(client *Client, message Message) {
 
 	// Get current presence state - validate against actually connected users
 	roomMutex.RLock()
-	var presenceData map[string]string
+	var participants []RoomPresenceParticipant
 	if room, exists := rooms[requestData.RoomID]; exists {
-		presenceData = make(map[string]string)
+		participants = make([]RoomPresenceParticipant, 0, len(room.Presence))
 
 		// Get list of currently connected userIDs
 		mutex.RLock()
@@ -1267,21 +1257,22 @@ func handleGetRoomPresence(client *Client, message Message) {
 		for userID, state := range room.Presence {
 			// If user is not connected, force them to offline regardless of stored state
 			if !connectedUsers[userID] {
-				presenceData[userID] = "offline"
+				state = "offline"
 				// Also update the stored state to prevent future stale data
 				room.Presence[userID] = "offline"
-			} else {
-				presenceData[userID] = state
 			}
+
+			participants = append(participants, RoomPresenceParticipant{
+				UserID:        userID,
+				UserName:      userID,
+				PresenceState: state,
+			})
 		}
 	}
 	roomMutex.RUnlock()
 
 	// Send presence data back to requesting client
-	responseData, _ := json.Marshal(map[string]interface{}{
-		"roomId":   requestData.RoomID,
-		"presence": presenceData,
-	})
+	responseData, _ := json.Marshal(RoomPresenceResponse{RoomID: requestData.RoomID, Participants: participants})
 
 	responseMessage := Message{
 		Channel: fmt.Sprintf("user-%s", client.userID),
@@ -1329,16 +1320,7 @@ func handleStreamModeChanged(client *Client, message Message) {
 
 // handleWebcamJoin broadcasts when a user joins the webcam session
 func handleWebcamJoin(client *Client, message Message) {
-	var webcamData struct {
-		RoomID       string `json:"roomId"`
-		UserID       string `json:"userId"`
-		UserName     string `json:"userName"`
-		UserImage    string `json:"userImage"`
-		AudioEnabled bool   `json:"audioEnabled"`
-		VideoEnabled bool   `json:"videoEnabled"`
-		IsHub        bool   `json:"isHub"`
-		Timestamp    string `json:"timestamp"`
-	}
+	var webcamData WebcamJoinData
 
 	if err := json.Unmarshal(message.Data, &webcamData); err != nil {
 		log.Printf("Error parsing webcam join data: %v", err)
@@ -1354,16 +1336,12 @@ func handleWebcamJoin(client *Client, message Message) {
 
 	// Broadcast to all room participants except sender
 	broadcastToRoomExceptSender(webcamData.RoomID, client.userID, "webcam_join", webcamData)
-	log.Printf("User %s joined webcam in room %s (isHub: %v)", webcamData.UserName, webcamData.RoomID, webcamData.IsHub)
+	log.Printf("User %s joined webcam in room %s", webcamData.UserName, webcamData.RoomID)
 }
 
 // handleWebcamLeave broadcasts when a user leaves the webcam session
 func handleWebcamLeave(client *Client, message Message) {
-	var webcamData struct {
-		RoomID    string `json:"roomId"`
-		UserID    string `json:"userId"`
-		Timestamp string `json:"timestamp"`
-	}
+	var webcamData WebcamLeaveData
 
 	if err := json.Unmarshal(message.Data, &webcamData); err != nil {
 		log.Printf("Error parsing webcam leave data: %v", err)
@@ -1378,13 +1356,7 @@ func handleWebcamLeave(client *Client, message Message) {
 
 // handleWebcamToggle broadcasts when a user toggles audio/video
 func handleWebcamToggle(client *Client, message Message) {
-	var webcamData struct {
-		RoomID       string `json:"roomId"`
-		UserID       string `json:"userId"`
-		AudioEnabled *bool  `json:"audioEnabled,omitempty"`
-		VideoEnabled *bool  `json:"videoEnabled,omitempty"`
-		Timestamp    string `json:"timestamp"`
-	}
+	var webcamData WebcamToggleData
 
 	if err := json.Unmarshal(message.Data, &webcamData); err != nil {
 		log.Printf("Error parsing webcam toggle data: %v", err)
@@ -1395,6 +1367,11 @@ func handleWebcamToggle(client *Client, message Message) {
 	// Validate user is in the room
 	if !client.isInRoom(webcamData.RoomID) {
 		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to toggle webcam")
+		return
+	}
+
+	if webcamData.Type != "audio" && webcamData.Type != "video" {
+		sendErrorResponse(client, "INVALID_DATA", "Invalid webcam toggle type")
 		return
 	}
 
@@ -1423,17 +1400,7 @@ func handleWebcamHubChange(client *Client, message Message) {
 
 // handleCinemaAvatarUpdate broadcasts avatar position to room and stores for late joiners
 func handleCinemaAvatarUpdate(client *Client, message Message) {
-	var avatarData struct {
-		RoomID      string  `json:"roomId"`
-		UserID      string  `json:"userId"`
-		UserName    string  `json:"userName"`
-		PX          float64 `json:"px"`
-		PY          float64 `json:"py"`
-		PZ          float64 `json:"pz"`
-		RY          float64 `json:"ry"`
-		Anim        string  `json:"anim"`
-		AvatarModel string  `json:"avatarModel,omitempty"`
-	}
+	var avatarData CinemaAvatarData
 
 	if err := json.Unmarshal(message.Data, &avatarData); err != nil {
 		return
@@ -1515,10 +1482,7 @@ func handleGetCinemaAvatars(client *Client, message Message) {
 		avatars = []json.RawMessage{}
 	}
 
-	responseData, _ := json.Marshal(map[string]interface{}{
-		"roomId":  req.RoomID,
-		"avatars": avatars,
-	})
+	responseData, _ := json.Marshal(CinemaAvatarStateResponse{RoomID: req.RoomID, Avatars: decodeCinemaAvatarStates(avatars)})
 
 	responseMsg := Message{
 		Channel: fmt.Sprintf("user-%s", client.userID),
