@@ -8,7 +8,9 @@
         "url": "string",
         "roomId": "string",
         "state": "playing|paused",
-        "videoId": "string"
+        "videoId": "string",
+        "sentAt": "number",
+        "reason": "tick|play|pause|seek|load|resync|ended"
       }
     },
     "room_video_state": {

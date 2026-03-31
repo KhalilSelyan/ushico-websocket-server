@@ -47,6 +47,8 @@ type SyncData struct {
 	RoomID    string  `json:"roomId"`    // The room identifier (updated from ChatID).
 	State     string  `json:"state"`     // The state of the video (playing/paused).
 	VideoID   string  `json:"videoId"`   // UUID generated when URL changes for sync safety.
+	SentAt    int64   `json:"sentAt"`
+	Reason    string  `json:"reason"`
 }
 
 // Room represents a watch party room state (in-memory only).
@@ -572,6 +574,26 @@ func handleHostSync(client *Client, message Message) {
 		log.Printf("Error parsing sync data: %v", err)
 		sendErrorResponse(client, "INVALID_DATA", "Invalid sync data format")
 		return
+	}
+
+	validPlaybackStates := map[string]bool{"playing": true, "paused": true}
+	validPlaybackReasons := map[string]bool{
+		"tick":   true,
+		"play":   true,
+		"pause":  true,
+		"seek":   true,
+		"load":   true,
+		"resync": true,
+		"ended":  true,
+	}
+
+	if !validPlaybackStates[syncData.State] || !validPlaybackReasons[syncData.Reason] {
+		sendErrorResponse(client, "INVALID_DATA", "Invalid playback sync state")
+		return
+	}
+
+	if syncData.SentAt == 0 {
+		syncData.SentAt = time.Now().UnixMilli()
 	}
 
 	// Update room's current video state
