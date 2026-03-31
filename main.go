@@ -51,15 +51,15 @@ type SyncData struct {
 
 // Room represents a watch party room state (in-memory only).
 type Room struct {
-	ID           string            `json:"id"`
-	HostID       string            `json:"hostId"`
-	Name         string            `json:"name"`
-	Participants map[string]string `json:"participants"` // userID -> role mapping
-	Presence      map[string]string              `json:"presence"`      // userID -> presence state (active, away, offline)
-	CinemaAvatars map[string]json.RawMessage    `json:"cinemaAvatars"` // userID -> last avatar state
-	IsActive      bool                          `json:"isActive"`
-	CreatedAt    time.Time         `json:"createdAt"`
-	CurrentVideo SyncData          `json:"currentVideo"`
+	ID            string                     `json:"id"`
+	HostID        string                     `json:"hostId"`
+	Name          string                     `json:"name"`
+	Participants  map[string]string          `json:"participants"`  // userID -> role mapping
+	Presence      map[string]string          `json:"presence"`      // userID -> presence state (active, away, offline)
+	CinemaAvatars map[string]json.RawMessage `json:"cinemaAvatars"` // userID -> last avatar state
+	IsActive      bool                       `json:"isActive"`
+	CreatedAt     time.Time                  `json:"createdAt"`
+	CurrentVideo  SyncData                   `json:"currentVideo"`
 }
 
 // RoomData for room creation/management events.
@@ -79,15 +79,15 @@ type ErrorResponse struct {
 
 // Global variables for managing clients and messages.
 var (
-	clients      = make(map[*Client]bool)              // Map of connected clients.
-	broadcast    = make(chan Message, 256)             // Buffered channel for broadcasting messages.
-	register     = make(chan *Client)                  // Channel for registering new clients.
-	unregister   = make(chan *Client)                  // Channel for unregistering clients.
-	mutex        = &sync.RWMutex{}                     // Read-write mutex to protect the clients map.
-	rooms        = make(map[string]*Room)              // Active rooms.
-	roomMutex    = &sync.RWMutex{}                     // Protect rooms map.
-	channelSubs  = make(map[string]map[*Client]bool)   // Channel -> subscribed clients (for O(1) lookup).
-	channelMutex = &sync.RWMutex{}                     // Protect channelSubs map.
+	clients      = make(map[*Client]bool)            // Map of connected clients.
+	broadcast    = make(chan Message, 256)           // Buffered channel for broadcasting messages.
+	register     = make(chan *Client)                // Channel for registering new clients.
+	unregister   = make(chan *Client)                // Channel for unregistering clients.
+	mutex        = &sync.RWMutex{}                   // Read-write mutex to protect the clients map.
+	rooms        = make(map[string]*Room)            // Active rooms.
+	roomMutex    = &sync.RWMutex{}                   // Protect rooms map.
+	channelSubs  = make(map[string]map[*Client]bool) // Channel -> subscribed clients (for O(1) lookup).
+	channelMutex = &sync.RWMutex{}                   // Protect channelSubs map.
 )
 
 // Subscribe adds the client to the specified channel.
@@ -779,10 +779,10 @@ func handleSyncRoomState(client *Client, message Message) {
 
 	// Send confirmation back to client
 	confirmationData, _ := json.Marshal(map[string]interface{}{
-		"roomId":   roomData.RoomID,
-		"role":     clientRole,
-		"synced":   true,
-		"hostId":   roomData.HostID,
+		"roomId":       roomData.RoomID,
+		"role":         clientRole,
+		"synced":       true,
+		"hostId":       roomData.HostID,
 		"participants": len(roomData.Participants),
 	})
 
@@ -922,11 +922,11 @@ func handleRoomDeactivated(client *Client, message Message) {
 // handleParticipantKicked notifies a user that they were removed from the room
 func handleParticipantKicked(client *Client, message Message) {
 	var kickData struct {
-		RoomID      string `json:"roomId"`
-		RoomName    string `json:"roomName"`
-		KickedID    string `json:"kickedId"`
-		KickedName  string `json:"kickedName"`
-		Reason      string `json:"reason,omitempty"`
+		RoomID     string `json:"roomId"`
+		RoomName   string `json:"roomName"`
+		KickedID   string `json:"kickedId"`
+		KickedName string `json:"kickedName"`
+		Reason     string `json:"reason,omitempty"`
 	}
 
 	if err := json.Unmarshal(message.Data, &kickData); err != nil {
@@ -1112,11 +1112,11 @@ func broadcastToRoom(roomID, eventType string, data interface{}) {
 // handleRoomAnnouncement broadcasts system messages to room participants
 func handleRoomAnnouncement(client *Client, message Message) {
 	var announcementData struct {
-		RoomID      string `json:"roomId"`
-		Type        string `json:"type"`        // "user_joined", "user_left", "video_changed", "host_paused", etc.
-		UserName    string `json:"userName"`
-		Message     string `json:"message"`     // Pre-formatted message text
-		Timestamp   string `json:"timestamp"`
+		RoomID         string `json:"roomId"`
+		Type           string `json:"type"` // "user_joined", "user_left", "video_changed", "host_paused", etc.
+		UserName       string `json:"userName"`
+		Message        string `json:"message"` // Pre-formatted message text
+		Timestamp      string `json:"timestamp"`
 		AnnouncementID string `json:"announcementId"`
 	}
 
@@ -1128,14 +1128,14 @@ func handleRoomAnnouncement(client *Client, message Message) {
 
 	// Validate announcement type
 	validTypes := map[string]bool{
-		"user_joined":           true,
-		"user_left":             true,
-		"video_changed":         true,
-		"host_paused":           true,
-		"host_resumed":          true,
-		"host_transferred":      true,
-		"room_created":          true,
-		"video_seeked":          true,
+		"user_joined":            true,
+		"user_left":              true,
+		"video_changed":          true,
+		"host_paused":            true,
+		"host_resumed":           true,
+		"host_transferred":       true,
+		"room_created":           true,
+		"video_seeked":           true,
 		"host_started_streaming": true,
 		"host_stopped_streaming": true,
 	}
@@ -1152,11 +1152,11 @@ func handleRoomAnnouncement(client *Client, message Message) {
 // handleUserPresenceUpdate updates and broadcasts user presence status
 func handleUserPresenceUpdate(client *Client, message Message) {
 	var presenceData struct {
-		RoomID       string `json:"roomId"`
-		UserID       string `json:"userId"`
-		UserName     string `json:"userName"`
+		RoomID        string `json:"roomId"`
+		UserID        string `json:"userId"`
+		UserName      string `json:"userName"`
 		PresenceState string `json:"presenceState"` // "active", "away", "offline"
-		Timestamp    string `json:"timestamp"`
+		Timestamp     string `json:"timestamp"`
 	}
 
 	if err := json.Unmarshal(message.Data, &presenceData); err != nil {
@@ -1391,14 +1391,15 @@ func handleWebcamHubChange(client *Client, message Message) {
 // handleCinemaAvatarUpdate broadcasts avatar position to room and stores for late joiners
 func handleCinemaAvatarUpdate(client *Client, message Message) {
 	var avatarData struct {
-		RoomID   string  `json:"roomId"`
-		UserID   string  `json:"userId"`
-		UserName string  `json:"userName"`
-		PX       float64 `json:"px"`
-		PY       float64 `json:"py"`
-		PZ       float64 `json:"pz"`
-		RY       float64 `json:"ry"`
-		Anim     string  `json:"anim"`
+		RoomID      string  `json:"roomId"`
+		UserID      string  `json:"userId"`
+		UserName    string  `json:"userName"`
+		PX          float64 `json:"px"`
+		PY          float64 `json:"py"`
+		PZ          float64 `json:"pz"`
+		RY          float64 `json:"ry"`
+		Anim        string  `json:"anim"`
+		AvatarModel string  `json:"avatarModel,omitempty"`
 	}
 
 	if err := json.Unmarshal(message.Data, &avatarData); err != nil {
@@ -1419,7 +1420,7 @@ func handleCinemaAvatarUpdate(client *Client, message Message) {
 	}
 	roomMutex.Unlock()
 
-	broadcastToRoomExceptSender(avatarData.RoomID, client.userID, "cinema_avatar_update", avatarData)
+	broadcastToRoomExceptSender(avatarData.RoomID, client.userID, "cinema_avatar_update", message.Data)
 }
 
 // handleCinemaAnimation broadcasts animation emotes from a user to other room members
@@ -1646,7 +1647,7 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		channels:     make(map[string]bool),
 		userID:       userID,
 		rooms:        make(map[string]string),
-		lastPongTime: time.Now(), // Initialize to now, will be updated on pong
+		lastPongTime: time.Now(),             // Initialize to now, will be updated on pong
 		send:         make(chan Message, 64), // Buffered channel for outgoing messages
 	}
 
