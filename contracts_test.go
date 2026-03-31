@@ -33,6 +33,7 @@ func TestCriticalContractsFileVersionAndEvents(t *testing.T) {
 		"webcam_join",
 		"webcam_leave",
 		"webcam_toggle",
+		"webcam_state",
 		"cinema_avatar_update",
 		"cinema_avatar_state",
 	}

@@ -51,15 +51,16 @@ type SyncData struct {
 
 // Room represents a watch party room state (in-memory only).
 type Room struct {
-	ID            string                     `json:"id"`
-	HostID        string                     `json:"hostId"`
-	Name          string                     `json:"name"`
-	Participants  map[string]string          `json:"participants"`  // userID -> role mapping
-	Presence      map[string]string          `json:"presence"`      // userID -> presence state (active, away, offline)
-	CinemaAvatars map[string]json.RawMessage `json:"cinemaAvatars"` // userID -> last avatar state
-	IsActive      bool                       `json:"isActive"`
-	CreatedAt     time.Time                  `json:"createdAt"`
-	CurrentVideo  SyncData                   `json:"currentVideo"`
+	ID                 string                            `json:"id"`
+	HostID             string                            `json:"hostId"`
+	Name               string                            `json:"name"`
+	Participants       map[string]string                 `json:"participants"`  // userID -> role mapping
+	Presence           map[string]string                 `json:"presence"`      // userID -> presence state (active, away, offline)
+	CinemaAvatars      map[string]json.RawMessage        `json:"cinemaAvatars"` // userID -> last avatar state
+	WebcamParticipants map[string]WebcamStateParticipant `json:"webcamParticipants"`
+	IsActive           bool                              `json:"isActive"`
+	CreatedAt          time.Time                         `json:"createdAt"`
+	CurrentVideo       SyncData                          `json:"currentVideo"`
 }
 
 // RoomData for room creation/management events.
@@ -200,14 +201,15 @@ func createRoom(hostID, roomName string) *Room {
 
 	roomID := fmt.Sprintf("room_%d", time.Now().UnixNano())
 	room := &Room{
-		ID:           roomID,
-		HostID:       hostID,
-		Name:         roomName,
-		Participants: make(map[string]string),
-		Presence:     make(map[string]string),
-		IsActive:     true,
-		CreatedAt:    time.Now(),
-		CurrentVideo: SyncData{},
+		ID:                 roomID,
+		HostID:             hostID,
+		Name:               roomName,
+		Participants:       make(map[string]string),
+		Presence:           make(map[string]string),
+		WebcamParticipants: make(map[string]WebcamStateParticipant),
+		IsActive:           true,
+		CreatedAt:          time.Now(),
+		CurrentVideo:       SyncData{},
 	}
 	room.Participants[hostID] = "host"
 	room.Presence[hostID] = "active"
@@ -217,7 +219,7 @@ func createRoom(hostID, roomName string) *Room {
 }
 
 // joinRoom adds a user to an existing room.
-func joinRoom(roomID, userID string) error {
+func joinRoom(roomID, userID string) (string, bool, error) {
 	roomMutex.Lock()
 	defer roomMutex.Unlock()
 
@@ -226,23 +228,29 @@ func joinRoom(roomID, userID string) error {
 		// Auto-create room in server memory if it doesn't exist
 		// (room was created via DB, not via WebSocket create_room)
 		room = &Room{
-			ID:            roomID,
-			Participants:  make(map[string]string),
-			Presence:      make(map[string]string),
-			CinemaAvatars: make(map[string]json.RawMessage),
-			IsActive:      true,
-			CreatedAt:     time.Now(),
+			ID:                 roomID,
+			Participants:       make(map[string]string),
+			Presence:           make(map[string]string),
+			CinemaAvatars:      make(map[string]json.RawMessage),
+			WebcamParticipants: make(map[string]WebcamStateParticipant),
+			IsActive:           true,
+			CreatedAt:          time.Now(),
 		}
 		rooms[roomID] = room
 		log.Printf("Auto-created room %s in server memory for user %s", roomID, userID)
 	}
 	if !room.IsActive {
-		return fmt.Errorf("room is not active")
+		return "", false, fmt.Errorf("room is not active")
+	}
+
+	if existingRole, exists := room.Participants[userID]; exists {
+		room.Presence[userID] = "active"
+		return existingRole, false, nil
 	}
 
 	room.Participants[userID] = "viewer"
 	room.Presence[userID] = "active"
-	return nil
+	return "viewer", true, nil
 }
 
 // leaveRoom removes a user from a room.
@@ -257,6 +265,9 @@ func leaveRoom(roomID, userID string) error {
 
 	delete(room.Participants, userID)
 	delete(room.Presence, userID) // Remove presence when leaving
+	if room.WebcamParticipants != nil {
+		delete(room.WebcamParticipants, userID)
+	}
 
 	// If no participants left, deactivate room
 	if len(room.Participants) == 0 {
@@ -449,19 +460,24 @@ func handleJoinRoom(client *Client, message Message) {
 		return
 	}
 
-	if err := joinRoom(roomData.RoomID, client.userID); err != nil {
+	role, isNewJoin, err := joinRoom(roomData.RoomID, client.userID)
+	if err != nil {
 		log.Printf("Error joining room: %v", err)
 		sendErrorResponse(client, "JOIN_FAILED", err.Error())
 		return
 	}
 
-	client.joinRoomAsClient(roomData.RoomID, "viewer")
+	client.joinRoomAsClient(roomData.RoomID, role)
 	client.subscribe(fmt.Sprintf("room-%s", roomData.RoomID))
+
+	if !isNewJoin {
+		return
+	}
 
 	// Broadcast participant joined notification
 	joinedData, _ := json.Marshal(map[string]interface{}{
 		"userId": client.userID,
-		"role":   "viewer",
+		"role":   role,
 	})
 
 	responseMessage := Message{
@@ -783,14 +799,15 @@ func handleSyncRoomState(client *Client, message Message) {
 	// Create or update room in WebSocket server's memory
 	roomMutex.Lock()
 	room := &Room{
-		ID:           roomData.RoomID,
-		HostID:       roomData.HostID,
-		Name:         roomData.RoomName,
-		Participants: make(map[string]string),
-		Presence:     make(map[string]string),
-		IsActive:     true,
-		CreatedAt:    time.Now(),
-		CurrentVideo: SyncData{},
+		ID:                 roomData.RoomID,
+		HostID:             roomData.HostID,
+		Name:               roomData.RoomName,
+		Participants:       make(map[string]string),
+		Presence:           make(map[string]string),
+		WebcamParticipants: make(map[string]WebcamStateParticipant),
+		IsActive:           true,
+		CreatedAt:          time.Now(),
+		CurrentVideo:       SyncData{},
 	}
 
 	// Add all participants
@@ -1334,6 +1351,21 @@ func handleWebcamJoin(client *Client, message Message) {
 		return
 	}
 
+	roomMutex.Lock()
+	if room, exists := rooms[webcamData.RoomID]; exists {
+		if room.WebcamParticipants == nil {
+			room.WebcamParticipants = make(map[string]WebcamStateParticipant)
+		}
+		room.WebcamParticipants[webcamData.UserID] = WebcamStateParticipant{
+			UserID:       webcamData.UserID,
+			UserName:     webcamData.UserName,
+			UserImage:    webcamData.UserImage,
+			VideoEnabled: webcamData.VideoEnabled,
+			AudioEnabled: webcamData.AudioEnabled,
+		}
+	}
+	roomMutex.Unlock()
+
 	// Broadcast to all room participants except sender
 	broadcastToRoomExceptSender(webcamData.RoomID, client.userID, "webcam_join", webcamData)
 	log.Printf("User %s joined webcam in room %s", webcamData.UserName, webcamData.RoomID)
@@ -1348,6 +1380,12 @@ func handleWebcamLeave(client *Client, message Message) {
 		sendErrorResponse(client, "INVALID_DATA", "Invalid webcam leave data format")
 		return
 	}
+
+	roomMutex.Lock()
+	if room, exists := rooms[webcamData.RoomID]; exists && room.WebcamParticipants != nil {
+		delete(room.WebcamParticipants, webcamData.UserID)
+	}
+	roomMutex.Unlock()
 
 	// Broadcast to all room participants except sender
 	broadcastToRoomExceptSender(webcamData.RoomID, client.userID, "webcam_leave", webcamData)
@@ -1375,8 +1413,49 @@ func handleWebcamToggle(client *Client, message Message) {
 		return
 	}
 
+	roomMutex.Lock()
+	if room, exists := rooms[webcamData.RoomID]; exists && room.WebcamParticipants != nil {
+		participant := room.WebcamParticipants[webcamData.UserID]
+		if webcamData.Type == "audio" {
+			participant.AudioEnabled = webcamData.Enabled
+		} else {
+			participant.VideoEnabled = webcamData.Enabled
+		}
+		participant.UserID = webcamData.UserID
+		room.WebcamParticipants[webcamData.UserID] = participant
+	}
+	roomMutex.Unlock()
+
 	// Broadcast to all room participants except sender
 	broadcastToRoomExceptSender(webcamData.RoomID, client.userID, "webcam_toggle", webcamData)
+}
+
+func handleGetWebcamState(client *Client, message Message) {
+	var req struct {
+		RoomID string `json:"roomId"`
+	}
+
+	if err := json.Unmarshal(message.Data, &req); err != nil {
+		sendErrorResponse(client, "INVALID_DATA", "Invalid webcam state request")
+		return
+	}
+
+	if !client.isInRoom(req.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to request webcam state")
+		return
+	}
+
+	roomMutex.RLock()
+	participants := make([]WebcamStateParticipant, 0)
+	if room, exists := rooms[req.RoomID]; exists && room.WebcamParticipants != nil {
+		participants = make([]WebcamStateParticipant, 0, len(room.WebcamParticipants))
+		for _, participant := range room.WebcamParticipants {
+			participants = append(participants, participant)
+		}
+	}
+	roomMutex.RUnlock()
+
+	broadcastToSpecificUser(client.userID, "webcam_state", WebcamStateResponse{RoomID: req.RoomID, Participants: participants})
 }
 
 // handleWebcamHubChange broadcasts when the webcam hub changes
@@ -1591,6 +1670,8 @@ func handleClient(client *Client) {
 			handleWebcamLeave(client, message)
 		case "webcam_toggle":
 			handleWebcamToggle(client, message)
+		case "get_webcam_state":
+			handleGetWebcamState(client, message)
 		case "webcam_hub_change":
 			handleWebcamHubChange(client, message)
 		// CINEMA AVATARS
@@ -1689,6 +1770,9 @@ func handleMessages() {
 					// Clean up cinema avatar state
 					if room.CinemaAvatars != nil {
 						delete(room.CinemaAvatars, client.userID)
+					}
+					if room.WebcamParticipants != nil {
+						delete(room.WebcamParticipants, client.userID)
 					}
 					// Broadcast offline status using channelSubs for O(1) lookup
 					offlineData, _ := json.Marshal(map[string]interface{}{

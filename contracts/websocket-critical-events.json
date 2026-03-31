@@ -62,6 +62,13 @@
         "enabled": "boolean"
       }
     },
+    "webcam_state": {
+      "channel": "user-{userId}",
+      "fields": {
+        "roomId": "string",
+        "participants": "Array<{ userId: string, userName: string, userImage?: string, videoEnabled: boolean, audioEnabled: boolean }>"
+      }
+    },
     "cinema_avatar_update": {
       "channel": "room-{roomId}",
       "fields": {

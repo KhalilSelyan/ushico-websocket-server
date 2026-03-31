@@ -49,6 +49,19 @@ type WebcamToggleData struct {
 	Enabled bool   `json:"enabled"`
 }
 
+type WebcamStateParticipant struct {
+	UserID       string `json:"userId"`
+	UserName     string `json:"userName"`
+	UserImage    string `json:"userImage,omitempty"`
+	VideoEnabled bool   `json:"videoEnabled"`
+	AudioEnabled bool   `json:"audioEnabled"`
+}
+
+type WebcamStateResponse struct {
+	RoomID       string                   `json:"roomId"`
+	Participants []WebcamStateParticipant `json:"participants"`
+}
+
 type CinemaAvatarData struct {
 	RoomID      string  `json:"roomId"`
 	UserID      string  `json:"userId"`
