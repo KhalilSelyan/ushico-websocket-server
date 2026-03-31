@@ -571,6 +571,39 @@ func handleHostSync(client *Client, message Message) {
 	broadcast <- message
 }
 
+func handleGetCurrentVideoState(client *Client, message Message) {
+	var req struct {
+		RoomID string `json:"roomId"`
+	}
+
+	if err := json.Unmarshal(message.Data, &req); err != nil {
+		log.Printf("Error parsing current video state request: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid current video state request")
+		return
+	}
+
+	if !client.isInRoom(req.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to request current video state")
+		return
+	}
+
+	roomMutex.RLock()
+	room, exists := rooms[req.RoomID]
+	roomMutex.RUnlock()
+
+	var syncState interface{}
+	if exists && room.CurrentVideo.VideoID != "" {
+		syncState = room.CurrentVideo
+	} else {
+		syncState = nil
+	}
+
+	broadcastToSpecificUser(client.userID, "room_video_state", map[string]interface{}{
+		"roomId": req.RoomID,
+		"sync":   syncState,
+	})
+}
+
 func handleTransferHost(client *Client, message Message) {
 	var roomData RoomData
 	if err := json.Unmarshal(message.Data, &roomData); err != nil {
@@ -1547,6 +1580,8 @@ func handleClient(client *Client) {
 			handleLeaveRoom(client, message)
 		case "host_sync":
 			handleHostSync(client, message)
+		case "get_current_video_state":
+			handleGetCurrentVideoState(client, message)
 		case "transfer_host":
 			handleTransferHost(client, message)
 		case "room_message":
