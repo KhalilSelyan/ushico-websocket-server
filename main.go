@@ -13,6 +13,19 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func logRealtime(event string, fields map[string]interface{}) {
+	payload := map[string]interface{}{"event": event}
+	for key, value := range fields {
+		payload[key] = value
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[realtime] %s %+v", event, fields)
+		return
+	}
+	log.Printf("[realtime] %s", encoded)
+}
+
 // Configure the WebSocket upgrader with buffer sizes, CORS policy, and compression.
 var upgrader = websocket.Upgrader{
 	CheckOrigin:       func(r *http.Request) bool { return true }, // Allow all origins
@@ -471,6 +484,12 @@ func handleJoinRoom(client *Client, message Message) {
 
 	client.joinRoomAsClient(roomData.RoomID, role)
 	client.subscribe(fmt.Sprintf("room-%s", roomData.RoomID))
+	logRealtime("room_join", map[string]interface{}{
+		"roomId":    roomData.RoomID,
+		"userId":    client.userID,
+		"role":      role,
+		"isNewJoin": isNewJoin,
+	})
 
 	if !isNewJoin {
 		return
@@ -516,6 +535,11 @@ func handleLeaveRoom(client *Client, message Message) {
 
 	client.leaveRoomAsClient(roomData.RoomID)
 	client.unsubscribe(fmt.Sprintf("room-%s", roomData.RoomID))
+	logRealtime("room_leave", map[string]interface{}{
+		"roomId":  roomData.RoomID,
+		"userId":  client.userID,
+		"wasHost": wasHost,
+	})
 
 	// Broadcast participant left notification
 	leftData, _ := json.Marshal(map[string]interface{}{
@@ -595,6 +619,14 @@ func handleHostSync(client *Client, message Message) {
 	if syncData.SentAt == 0 {
 		syncData.SentAt = time.Now().UnixMilli()
 	}
+	logRealtime("playback_sync", map[string]interface{}{
+		"roomId":    roomID,
+		"userId":    client.userID,
+		"state":     syncData.State,
+		"reason":    syncData.Reason,
+		"timestamp": syncData.Timestamp,
+		"videoId":   syncData.VideoID,
+	})
 
 	// Update room's current video state
 	roomMutex.Lock()
@@ -636,6 +668,11 @@ func handleGetCurrentVideoState(client *Client, message Message) {
 	}
 
 	broadcastToSpecificUser(client.userID, "room_video_state", RoomVideoStateResponse{RoomID: req.RoomID, Sync: syncState})
+	logRealtime("playback_state_snapshot", map[string]interface{}{
+		"roomId":       req.RoomID,
+		"userId":       client.userID,
+		"hasSyncState": syncState != nil,
+	})
 }
 
 func handleTransferHost(client *Client, message Message) {
@@ -1387,6 +1424,12 @@ func handleWebcamJoin(client *Client, message Message) {
 		}
 	}
 	roomMutex.Unlock()
+	logRealtime("webcam_join", map[string]interface{}{
+		"roomId":       webcamData.RoomID,
+		"userId":       webcamData.UserID,
+		"audioEnabled": webcamData.AudioEnabled,
+		"videoEnabled": webcamData.VideoEnabled,
+	})
 
 	// Broadcast to all room participants except sender
 	broadcastToRoomExceptSender(webcamData.RoomID, client.userID, "webcam_join", webcamData)
@@ -1408,6 +1451,10 @@ func handleWebcamLeave(client *Client, message Message) {
 		delete(room.WebcamParticipants, webcamData.UserID)
 	}
 	roomMutex.Unlock()
+	logRealtime("webcam_leave", map[string]interface{}{
+		"roomId": webcamData.RoomID,
+		"userId": webcamData.UserID,
+	})
 
 	// Broadcast to all room participants except sender
 	broadcastToRoomExceptSender(webcamData.RoomID, client.userID, "webcam_leave", webcamData)
@@ -1447,6 +1494,12 @@ func handleWebcamToggle(client *Client, message Message) {
 		room.WebcamParticipants[webcamData.UserID] = participant
 	}
 	roomMutex.Unlock()
+	logRealtime("webcam_toggle", map[string]interface{}{
+		"roomId":  webcamData.RoomID,
+		"userId":  webcamData.UserID,
+		"type":    webcamData.Type,
+		"enabled": webcamData.Enabled,
+	})
 
 	// Broadcast to all room participants except sender
 	broadcastToRoomExceptSender(webcamData.RoomID, client.userID, "webcam_toggle", webcamData)
@@ -1478,6 +1531,11 @@ func handleGetWebcamState(client *Client, message Message) {
 	roomMutex.RUnlock()
 
 	broadcastToSpecificUser(client.userID, "webcam_state", WebcamStateResponse{RoomID: req.RoomID, Participants: participants})
+	logRealtime("webcam_state_snapshot", map[string]interface{}{
+		"roomId":           req.RoomID,
+		"userId":           client.userID,
+		"participantCount": len(participants),
+	})
 }
 
 // handleWebcamHubChange broadcasts when the webcam hub changes
@@ -1522,6 +1580,11 @@ func handleCinemaAvatarUpdate(client *Client, message Message) {
 	roomMutex.Unlock()
 
 	broadcastToRoomExceptSender(avatarData.RoomID, client.userID, "cinema_avatar_update", message.Data)
+	logRealtime("cinema_avatar_update", map[string]interface{}{
+		"roomId": avatarData.RoomID,
+		"userId": avatarData.UserID,
+		"anim":   avatarData.Anim,
+	})
 }
 
 // handleCinemaAnimation broadcasts animation emotes from a user to other room members
@@ -1796,6 +1859,10 @@ func handleMessages() {
 					if room.WebcamParticipants != nil {
 						delete(room.WebcamParticipants, client.userID)
 					}
+					logRealtime("client_disconnect_cleanup", map[string]interface{}{
+						"roomId": roomID,
+						"userId": client.userID,
+					})
 					// Broadcast offline status using channelSubs for O(1) lookup
 					offlineData, _ := json.Marshal(map[string]interface{}{
 						"roomId":        roomID,
