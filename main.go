@@ -1217,12 +1217,13 @@ func broadcastToRoom(roomID, eventType string, data interface{}) {
 // handleRoomAnnouncement broadcasts system messages to room participants
 func handleRoomAnnouncement(client *Client, message Message) {
 	var announcementData struct {
-		RoomID         string `json:"roomId"`
-		Type           string `json:"type"` // "user_joined", "user_left", "video_changed", "host_paused", etc.
-		UserName       string `json:"userName"`
-		Message        string `json:"message"` // Pre-formatted message text
-		Timestamp      string `json:"timestamp"`
-		AnnouncementID string `json:"announcementId"`
+		RoomID         string          `json:"roomId"`
+		Type           string          `json:"type"` // "user_joined", "user_left", "video_changed", "host_paused", etc.
+		UserName       string          `json:"userName"`
+		Message        string          `json:"message"` // Pre-formatted message text
+		Timestamp      string          `json:"timestamp"`
+		AnnouncementID string          `json:"announcementId"`
+		Metadata       json.RawMessage `json:"metadata,omitempty"`
 	}
 
 	if err := json.Unmarshal(message.Data, &announcementData); err != nil {
@@ -1243,6 +1244,12 @@ func handleRoomAnnouncement(client *Client, message Message) {
 		"video_seeked":           true,
 		"host_started_streaming": true,
 		"host_stopped_streaming": true,
+		"queue_add":              true,
+		"queue_remove":           true,
+		"bookmark_added":         true,
+		"poll_started":           true,
+		"poll_voted":             true,
+		"poll_closed":            true,
 	}
 
 	if !validTypes[announcementData.Type] {
