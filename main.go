@@ -269,9 +269,8 @@ func joinRoom(roomID, userID, requestedRole string) (string, bool, error) {
 	}
 
 	role := "viewer"
-	if requestedRole == "host" {
+	if requestedRole == "host" && room.HostID == userID {
 		role = "host"
-		room.HostID = userID
 	}
 
 	room.Participants[userID] = role
