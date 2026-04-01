@@ -84,6 +84,7 @@ type RoomData struct {
 	RoomName string   `json:"roomName,omitempty"`
 	UserID   string   `json:"userId"`
 	UserIDs  []string `json:"userIds,omitempty"` // for bulk operations
+	Role     string   `json:"role,omitempty"`    // "host" or "viewer" — sent by client on join
 }
 
 // ErrorResponse for client errors.
@@ -234,7 +235,7 @@ func createRoom(hostID, roomName string) *Room {
 }
 
 // joinRoom adds a user to an existing room.
-func joinRoom(roomID, userID string) (string, bool, error) {
+func joinRoom(roomID, userID, requestedRole string) (string, bool, error) {
 	roomMutex.Lock()
 	defer roomMutex.Unlock()
 
@@ -259,22 +260,23 @@ func joinRoom(roomID, userID string) (string, bool, error) {
 	}
 
 	if existingRole, exists := room.Participants[userID]; exists {
+		if requestedRole == "host" && room.HostID == userID {
+			room.Participants[userID] = "host"
+			existingRole = "host"
+		}
 		room.Presence[userID] = "active"
 		return existingRole, false, nil
 	}
 
-	// First participant in an auto-created room becomes the host
-	if room.HostID == "" {
+	role := "viewer"
+	if requestedRole == "host" {
+		role = "host"
 		room.HostID = userID
-		room.Participants[userID] = "host"
-		room.Presence[userID] = "active"
-		log.Printf("Room %s: auto-assigned host to %s (first participant)", roomID, userID)
-		return "host", true, nil
 	}
 
-	room.Participants[userID] = "viewer"
+	room.Participants[userID] = role
 	room.Presence[userID] = "active"
-	return "viewer", true, nil
+	return role, true, nil
 }
 
 // leaveRoom removes a user from a room.
@@ -484,7 +486,7 @@ func handleJoinRoom(client *Client, message Message) {
 		return
 	}
 
-	role, isNewJoin, err := joinRoom(roomData.RoomID, client.userID)
+	role, isNewJoin, err := joinRoom(roomData.RoomID, client.userID, roomData.Role)
 	if err != nil {
 		log.Printf("Error joining room: %v", err)
 		sendErrorResponse(client, "JOIN_FAILED", err.Error())
