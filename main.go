@@ -263,6 +263,15 @@ func joinRoom(roomID, userID string) (string, bool, error) {
 		return existingRole, false, nil
 	}
 
+	// First participant in an auto-created room becomes the host
+	if room.HostID == "" {
+		room.HostID = userID
+		room.Participants[userID] = "host"
+		room.Presence[userID] = "active"
+		log.Printf("Room %s: auto-assigned host to %s (first participant)", roomID, userID)
+		return "host", true, nil
+	}
+
 	room.Participants[userID] = "viewer"
 	room.Presence[userID] = "active"
 	return "viewer", true, nil
