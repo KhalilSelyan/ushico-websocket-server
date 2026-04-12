@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "events": {
     "host_sync": {
       "channel": "room-{roomId}",
@@ -90,6 +90,36 @@
       "fields": {
         "roomId": "string",
         "avatars": "Array<CinemaAvatarData>"
+      }
+    },
+    "cinema_animation": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "userName": "string",
+        "animation": "string"
+      }
+    },
+    "cinema_mood_changed": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "userName": "string",
+        "color": "string",
+        "brightness": "number",
+        "timestamp": "string?"
+      }
+    },
+    "cinema_room_theme_changed": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "userName": "string",
+        "themeId": "imax|arthouse|grindhouse|noir",
+        "timestamp": "string?"
       }
     }
   }

@@ -2,7 +2,7 @@ package main
 
 import "encoding/json"
 
-const WebSocketContractVersion = 1
+const WebSocketContractVersion = 2
 
 type RoomVideoStateResponse struct {
 	RoomID string    `json:"roomId"`
@@ -77,6 +77,30 @@ type CinemaAvatarData struct {
 type CinemaAvatarStateResponse struct {
 	RoomID  string             `json:"roomId"`
 	Avatars []CinemaAvatarData `json:"avatars"`
+}
+
+type CinemaAnimationData struct {
+	RoomID    string `json:"roomId"`
+	UserID    string `json:"userId"`
+	UserName  string `json:"userName"`
+	Animation string `json:"animation"`
+}
+
+type CinemaMoodChangedData struct {
+	RoomID     string  `json:"roomId"`
+	UserID     string  `json:"userId"`
+	UserName   string  `json:"userName"`
+	Color      string  `json:"color"`
+	Brightness float64 `json:"brightness"`
+	Timestamp  string  `json:"timestamp,omitempty"`
+}
+
+type CinemaRoomThemeChangedData struct {
+	RoomID    string `json:"roomId"`
+	UserID    string `json:"userId"`
+	UserName  string `json:"userName"`
+	ThemeID   string `json:"themeId"`
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 func decodeCinemaAvatarStates(raw []json.RawMessage) []CinemaAvatarData {

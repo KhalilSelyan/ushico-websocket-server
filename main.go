@@ -1606,35 +1606,32 @@ func handleCinemaAvatarUpdate(client *Client, message Message) {
 
 // handleCinemaAnimation broadcasts animation emotes from a user to other room members
 func handleCinemaAnimation(client *Client, message Message) {
-	var animData struct {
-		RoomID    string `json:"roomId"`
-		UserID    string `json:"userId"`
-		Animation string `json:"animation"`
-	}
-
+	var animData CinemaAnimationData
 	if err := json.Unmarshal(message.Data, &animData); err != nil {
 		return
 	}
 
-	// Broadcast the animation to other users in the room
 	broadcastToRoomExceptSender(animData.RoomID, client.userID, "cinema_animation", message.Data)
 }
 
 // handleCinemaMoodChanged broadcasts mood lighting changes to the room
 func handleCinemaMoodChanged(client *Client, message Message) {
-	var moodData struct {
-		RoomID     string  `json:"roomId"`
-		UserID     string  `json:"userId"`
-		Color      string  `json:"color"`
-		Brightness float64 `json:"brightness"`
-	}
-
-	err := json.Unmarshal(message.Data, &moodData)
-	if err != nil {
+	var moodData CinemaMoodChangedData
+	if err := json.Unmarshal(message.Data, &moodData); err != nil {
 		return
 	}
 
 	broadcastToRoomExceptSender(moodData.RoomID, client.userID, "cinema_mood_changed", message.Data)
+}
+
+// handleCinemaRoomThemeChanged broadcasts room theme preset changes to the room
+func handleCinemaRoomThemeChanged(client *Client, message Message) {
+	var themeData CinemaRoomThemeChangedData
+	if err := json.Unmarshal(message.Data, &themeData); err != nil {
+		return
+	}
+
+	broadcastToRoomExceptSender(themeData.RoomID, client.userID, "cinema_room_theme_changed", message.Data)
 }
 
 // handleGetCinemaAvatars sends all current avatar states to the requester (late joiner)
@@ -1785,6 +1782,8 @@ func handleClient(client *Client) {
 			handleCinemaAnimation(client, message)
 		case "cinema_mood_changed":
 			handleCinemaMoodChanged(client, message)
+		case "cinema_room_theme_changed":
+			handleCinemaRoomThemeChanged(client, message)
 		// APPLICATION-LEVEL HEARTBEAT
 		// Browser WebSocket API can't send protocol-level pings,
 		// so clients send JSON ping events to detect zombie connections.

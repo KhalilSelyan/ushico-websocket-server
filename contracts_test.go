@@ -36,6 +36,9 @@ func TestCriticalContractsFileVersionAndEvents(t *testing.T) {
 		"webcam_state",
 		"cinema_avatar_update",
 		"cinema_avatar_state",
+		"cinema_animation",
+		"cinema_mood_changed",
+		"cinema_room_theme_changed",
 	}
 
 	for _, event := range required {
