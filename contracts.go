@@ -103,6 +103,23 @@ type CinemaRoomThemeChangedData struct {
 	Timestamp string `json:"timestamp,omitempty"`
 }
 
+// Face mode - webcam mapped onto avatar face
+type FaceModeData struct {
+	RoomID  string `json:"roomId"`
+	UserID  string `json:"userId"`
+	Enabled bool   `json:"enabled"`
+}
+
+type FaceModeParticipant struct {
+	UserID  string `json:"userId"`
+	Enabled bool   `json:"enabled"`
+}
+
+type FaceModeStateResponse struct {
+	RoomID       string                `json:"roomId"`
+	Participants []FaceModeParticipant `json:"participants"`
+}
+
 func decodeCinemaAvatarStates(raw []json.RawMessage) []CinemaAvatarData {
 	avatars := make([]CinemaAvatarData, 0, len(raw))
 	for _, state := range raw {

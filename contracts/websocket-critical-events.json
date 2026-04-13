@@ -121,6 +121,21 @@
         "themeId": "imax|arthouse|grindhouse|noir",
         "timestamp": "string?"
       }
+    },
+    "face_mode_toggle": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "enabled": "boolean"
+      }
+    },
+    "face_mode_state": {
+      "channel": "user-{userId}",
+      "fields": {
+        "roomId": "string",
+        "participants": "Array<{ userId: string, enabled: boolean }>"
+      }
     }
   }
 }

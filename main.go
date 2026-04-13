@@ -66,16 +66,17 @@ type SyncData struct {
 
 // Room represents a watch party room state (in-memory only).
 type Room struct {
-	ID                 string                            `json:"id"`
-	HostID             string                            `json:"hostId"`
-	Name               string                            `json:"name"`
-	Participants       map[string]string                 `json:"participants"`  // userID -> role mapping
-	Presence           map[string]string                 `json:"presence"`      // userID -> presence state (active, away, offline)
-	CinemaAvatars      map[string]json.RawMessage        `json:"cinemaAvatars"` // userID -> last avatar state
-	WebcamParticipants map[string]WebcamStateParticipant `json:"webcamParticipants"`
-	IsActive           bool                              `json:"isActive"`
-	CreatedAt          time.Time                         `json:"createdAt"`
-	CurrentVideo       SyncData                          `json:"currentVideo"`
+	ID                   string                            `json:"id"`
+	HostID               string                            `json:"hostId"`
+	Name                 string                            `json:"name"`
+	Participants         map[string]string                 `json:"participants"`  // userID -> role mapping
+	Presence             map[string]string                 `json:"presence"`      // userID -> presence state (active, away, offline)
+	CinemaAvatars        map[string]json.RawMessage        `json:"cinemaAvatars"` // userID -> last avatar state
+	WebcamParticipants   map[string]WebcamStateParticipant `json:"webcamParticipants"`
+	FaceModeParticipants map[string]bool                   `json:"faceModeParticipants"` // userID -> face mode enabled
+	IsActive             bool                              `json:"isActive"`
+	CreatedAt            time.Time                         `json:"createdAt"`
+	CurrentVideo         SyncData                          `json:"currentVideo"`
 }
 
 // RoomData for room creation/management events.
@@ -217,15 +218,16 @@ func createRoom(hostID, roomName string) *Room {
 
 	roomID := fmt.Sprintf("room_%d", time.Now().UnixNano())
 	room := &Room{
-		ID:                 roomID,
-		HostID:             hostID,
-		Name:               roomName,
-		Participants:       make(map[string]string),
-		Presence:           make(map[string]string),
-		WebcamParticipants: make(map[string]WebcamStateParticipant),
-		IsActive:           true,
-		CreatedAt:          time.Now(),
-		CurrentVideo:       SyncData{},
+		ID:                   roomID,
+		HostID:               hostID,
+		Name:                 roomName,
+		Participants:         make(map[string]string),
+		Presence:             make(map[string]string),
+		WebcamParticipants:   make(map[string]WebcamStateParticipant),
+		FaceModeParticipants: make(map[string]bool),
+		IsActive:             true,
+		CreatedAt:            time.Now(),
+		CurrentVideo:         SyncData{},
 	}
 	room.Participants[hostID] = "host"
 	room.Presence[hostID] = "active"
@@ -244,13 +246,14 @@ func joinRoom(roomID, userID, requestedRole string) (string, bool, error) {
 		// Auto-create room in server memory if it doesn't exist
 		// (room was created via DB, not via WebSocket create_room)
 		room = &Room{
-			ID:                 roomID,
-			Participants:       make(map[string]string),
-			Presence:           make(map[string]string),
-			CinemaAvatars:      make(map[string]json.RawMessage),
-			WebcamParticipants: make(map[string]WebcamStateParticipant),
-			IsActive:           true,
-			CreatedAt:          time.Now(),
+			ID:                   roomID,
+			Participants:         make(map[string]string),
+			Presence:             make(map[string]string),
+			CinemaAvatars:        make(map[string]json.RawMessage),
+			WebcamParticipants:   make(map[string]WebcamStateParticipant),
+			FaceModeParticipants: make(map[string]bool),
+			IsActive:             true,
+			CreatedAt:            time.Now(),
 		}
 		rooms[roomID] = room
 		log.Printf("Auto-created room %s in server memory for user %s", roomID, userID)
@@ -868,15 +871,16 @@ func handleSyncRoomState(client *Client, message Message) {
 	// Create or update room in WebSocket server's memory
 	roomMutex.Lock()
 	room := &Room{
-		ID:                 roomData.RoomID,
-		HostID:             roomData.HostID,
-		Name:               roomData.RoomName,
-		Participants:       make(map[string]string),
-		Presence:           make(map[string]string),
-		WebcamParticipants: make(map[string]WebcamStateParticipant),
-		IsActive:           true,
-		CreatedAt:          time.Now(),
-		CurrentVideo:       SyncData{},
+		ID:                   roomData.RoomID,
+		HostID:               roomData.HostID,
+		Name:                 roomData.RoomName,
+		Participants:         make(map[string]string),
+		Presence:             make(map[string]string),
+		WebcamParticipants:   make(map[string]WebcamStateParticipant),
+		FaceModeParticipants: make(map[string]bool),
+		IsActive:             true,
+		CreatedAt:            time.Now(),
+		CurrentVideo:         SyncData{},
 	}
 
 	// Add all participants
@@ -1634,6 +1638,80 @@ func handleCinemaRoomThemeChanged(client *Client, message Message) {
 	broadcastToRoomExceptSender(themeData.RoomID, client.userID, "cinema_room_theme_changed", message.Data)
 }
 
+
+// handleFaceModeToggle handles when a user toggles face mode (webcam on avatar face)
+func handleFaceModeToggle(client *Client, message Message) {
+	var faceData FaceModeData
+
+	if err := json.Unmarshal(message.Data, &faceData); err != nil {
+		log.Printf("Error parsing face mode data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid face mode data format")
+		return
+	}
+
+	// Validate user is in the room
+	if !client.isInRoom(faceData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to toggle face mode")
+		return
+	}
+
+	// Update room state
+	roomMutex.Lock()
+	if room, exists := rooms[faceData.RoomID]; exists {
+		if room.FaceModeParticipants == nil {
+			room.FaceModeParticipants = make(map[string]bool)
+		}
+		if faceData.Enabled {
+			room.FaceModeParticipants[faceData.UserID] = true
+		} else {
+			delete(room.FaceModeParticipants, faceData.UserID)
+		}
+	}
+	roomMutex.Unlock()
+
+	logRealtime("face_mode_toggle", map[string]interface{}{
+		"roomId":  faceData.RoomID,
+		"userId":  faceData.UserID,
+		"enabled": faceData.Enabled,
+	})
+
+	// Broadcast to all room participants except sender
+	broadcastToRoomExceptSender(faceData.RoomID, client.userID, "face_mode_toggle", faceData)
+}
+
+// handleGetFaceModeState sends face mode state to late joiners
+func handleGetFaceModeState(client *Client, message Message) {
+	var req struct {
+		RoomID string `json:"roomId"`
+	}
+
+	if err := json.Unmarshal(message.Data, &req); err != nil {
+		sendErrorResponse(client, "INVALID_DATA", "Invalid face mode state request")
+		return
+	}
+
+	roomMutex.RLock()
+	participants := make([]FaceModeParticipant, 0)
+	if room, exists := rooms[req.RoomID]; exists && room.FaceModeParticipants != nil {
+		for userID, enabled := range room.FaceModeParticipants {
+			if enabled {
+				participants = append(participants, FaceModeParticipant{
+					UserID:  userID,
+					Enabled: true,
+				})
+			}
+		}
+	}
+	roomMutex.RUnlock()
+
+	response := FaceModeStateResponse{
+		RoomID:       req.RoomID,
+		Participants: participants,
+	}
+
+	broadcastToSpecificUser(client.userID, "face_mode_state", response)
+}
+
 // handleGetCinemaAvatars sends all current avatar states to the requester (late joiner)
 func handleGetCinemaAvatars(client *Client, message Message) {
 	var req struct {
@@ -1784,6 +1862,12 @@ func handleClient(client *Client) {
 			handleCinemaMoodChanged(client, message)
 		case "cinema_room_theme_changed":
 			handleCinemaRoomThemeChanged(client, message)
+
+		// FACE MODE - webcam mapped onto avatar face
+		case "face_mode_toggle":
+			handleFaceModeToggle(client, message)
+		case "get_face_mode_state":
+			handleGetFaceModeState(client, message)
 		// APPLICATION-LEVEL HEARTBEAT
 		// Browser WebSocket API can't send protocol-level pings,
 		// so clients send JSON ping events to detect zombie connections.
