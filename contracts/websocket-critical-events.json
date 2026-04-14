@@ -136,6 +136,129 @@
         "roomId": "string",
         "participants": "Array<{ userId: string, enabled: boolean }>"
       }
+    },
+    "video_reaction": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "userName": "string",
+        "emoji": "string",
+        "videoTimestamp": "number",
+        "timestamp": "string",
+        "reactionId": "string"
+      }
+    },
+    "room_announcement": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "type": "string",
+        "userName": "string",
+        "message": "string",
+        "timestamp": "string",
+        "announcementId": "string",
+        "metadata": "object?"
+      }
+    },
+    "webcam_hub_change": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "newHubUserId": "string?",
+        "timestamp": "string"
+      }
+    },
+    "queue_updated": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "queue": "Array<{ id: string, videoUrl: string, videoTitle?: string, addedBy: { userId: string, userName: string }, addedAt: number }>"
+      }
+    },
+    "queue_countdown": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "secondsRemaining": "number",
+        "nextItem": "{ id: string, videoUrl: string, videoTitle?: string, addedBy: { userId: string, userName: string }, addedAt: number }"
+      }
+    },
+    "queue_autoplay": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "item": "{ id: string, videoUrl: string, videoTitle?: string, addedBy: { userId: string, userName: string }, addedAt: number }"
+      }
+    },
+    "role_changed": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "newRole": "string",
+        "changedBy": "string"
+      }
+    },
+    "user_muted": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "expiresAt": "string",
+        "mutedBy": "string",
+        "reason": "string?"
+      }
+    },
+    "user_unmuted": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string"
+      }
+    },
+    "message_deleted": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "messageId": "string",
+        "deletedBy": "string"
+      }
+    },
+    "movie_proposed": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "proposalId": "string",
+        "movie": "{ id: string, tmdbId: string, title: string, posterPath: string?, releaseDate: string?, voteAverage: string? }",
+        "proposer": "{ id: string, name: string, image: string? }",
+        "expiresAt": "string"
+      }
+    },
+    "movie_vote_update": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "proposalId": "string",
+        "votes": "{ up: Array<{ id: string, name: string, image: string? }>, down: Array<{ id: string, name: string, image: string? }> }"
+      }
+    },
+    "movie_approved": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "proposalId": "string",
+        "movie": "{ id: string, tmdbId: string, title: string, posterPath: string?, releaseDate: string?, voteAverage: string? }",
+        "approvedBy": "{ id: string, name: string, image: string? }"
+      }
+    },
+    "movie_rejected": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "proposalId": "string",
+        "reason": "host|timeout|majority_down"
+      }
     }
   }
 }

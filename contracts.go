@@ -235,3 +235,92 @@ type MessageDeletedData struct {
 	MessageID string `json:"messageId"`
 	DeletedBy string `json:"deletedBy"`
 }
+
+// Movie proposal types for collaborative movie selection
+
+type MovieProposalUser struct {
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Image *string `json:"image"`
+}
+
+type MovieProposalMovie struct {
+	ID          string  `json:"id"`
+	TmdbID      string  `json:"tmdbId"`
+	Title       string  `json:"title"`
+	PosterPath  *string `json:"posterPath"`
+	ReleaseDate *string `json:"releaseDate"`
+	VoteAverage *string `json:"voteAverage"`
+}
+
+type MovieProposal struct {
+	ID        string                 `json:"id"`
+	RoomID    string                 `json:"roomId"`
+	Movie     MovieProposalMovie     `json:"movie"`
+	Proposer  MovieProposalUser      `json:"proposer"`
+	VotesUp   []MovieProposalUser    `json:"votesUp"`
+	VotesDown []MovieProposalUser    `json:"votesDown"`
+	Status    string                 `json:"status"` // pending, approved, rejected
+	ExpiresAt string                 `json:"expiresAt"`
+	CreatedAt string                 `json:"createdAt"`
+}
+
+// Client → Server
+
+type MovieProposeData struct {
+	RoomID     string            `json:"roomId"`
+	MovieID    string            `json:"movieId"`
+	MovieTitle string            `json:"movieTitle"`
+	PosterPath *string           `json:"posterPath"`
+	Proposer   MovieProposalUser `json:"proposer"`
+}
+
+type MovieVoteData struct {
+	RoomID     string            `json:"roomId"`
+	ProposalID string            `json:"proposalId"`
+	Vote       string            `json:"vote"` // "up" or "down"
+	Voter      MovieProposalUser `json:"voter"`
+}
+
+type MovieApproveData struct {
+	RoomID     string            `json:"roomId"`
+	ProposalID string            `json:"proposalId"`
+	Approver   MovieProposalUser `json:"approver"`
+}
+
+type MovieRejectData struct {
+	RoomID     string `json:"roomId"`
+	ProposalID string `json:"proposalId"`
+}
+
+// Server → Clients
+
+type MovieProposedData struct {
+	RoomID     string             `json:"roomId"`
+	ProposalID string             `json:"proposalId"`
+	Movie      MovieProposalMovie `json:"movie"`
+	Proposer   MovieProposalUser  `json:"proposer"`
+	ExpiresAt  string             `json:"expiresAt"`
+}
+
+type MovieVoteUpdateData struct {
+	RoomID     string `json:"roomId"`
+	ProposalID string `json:"proposalId"`
+	Votes      struct {
+		Up   []MovieProposalUser `json:"up"`
+		Down []MovieProposalUser `json:"down"`
+	} `json:"votes"`
+}
+
+type MovieApprovedData struct {
+	RoomID     string             `json:"roomId"`
+	ProposalID string             `json:"proposalId"`
+	Movie      MovieProposalMovie `json:"movie"`
+	ApprovedBy MovieProposalUser  `json:"approvedBy"`
+}
+
+type MovieRejectedData struct {
+	RoomID     string `json:"roomId"`
+	ProposalID string `json:"proposalId"`
+	Reason     string `json:"reason"` // "host", "timeout", "majority_down"
+}
