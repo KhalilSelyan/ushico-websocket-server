@@ -130,3 +130,108 @@ func decodeCinemaAvatarStates(raw []json.RawMessage) []CinemaAvatarData {
 	}
 	return avatars
 }
+
+// Queue types for video playlist management
+
+type QueueItemAddedBy struct {
+	UserID   string `json:"userId"`
+	UserName string `json:"userName"`
+}
+
+type QueueItem struct {
+	ID         string           `json:"id"`
+	VideoURL   string           `json:"videoUrl"`
+	VideoTitle string           `json:"videoTitle,omitempty"`
+	AddedBy    QueueItemAddedBy `json:"addedBy"`
+	AddedAt    int64            `json:"addedAt"`
+}
+
+type QueueAddData struct {
+	RoomID     string           `json:"roomId"`
+	VideoURL   string           `json:"videoUrl"`
+	VideoTitle string           `json:"videoTitle,omitempty"`
+	AddedBy    QueueItemAddedBy `json:"addedBy"`
+}
+
+type QueueRemoveData struct {
+	RoomID      string `json:"roomId"`
+	QueueItemID string `json:"queueItemId"`
+}
+
+type QueueReorderData struct {
+	RoomID      string `json:"roomId"`
+	QueueItemID string `json:"queueItemId"`
+	NewIndex    int    `json:"newIndex"`
+}
+
+type QueueUpdatedData struct {
+	RoomID string      `json:"roomId"`
+	Queue  []QueueItem `json:"queue"`
+}
+
+type QueueNextData struct {
+	RoomID string `json:"roomId"`
+}
+
+type QueueCountdownData struct {
+	RoomID           string    `json:"roomId"`
+	SecondsRemaining int       `json:"secondsRemaining"`
+	NextItem         QueueItem `json:"nextItem"`
+}
+
+type QueueAutoplayData struct {
+	RoomID string    `json:"roomId"`
+	Item   QueueItem `json:"item"`
+}
+
+// Moderation types for role changes and chat control
+
+type RoleChangedData struct {
+	RoomID    string `json:"roomId"`
+	UserID    string `json:"userId"`
+	NewRole   string `json:"newRole"`
+	ChangedBy string `json:"changedBy"`
+}
+
+type ChatMuteData struct {
+	RoomID          string `json:"roomId"`
+	TargetUserID    string `json:"targetUserId"`
+	DurationMinutes int    `json:"durationMinutes"`
+	Reason          string `json:"reason,omitempty"`
+}
+
+type ChatUnmuteData struct {
+	RoomID       string `json:"roomId"`
+	TargetUserID string `json:"targetUserId"`
+}
+
+type UserMutedData struct {
+	RoomID    string `json:"roomId"`
+	UserID    string `json:"userId"`
+	ExpiresAt string `json:"expiresAt"`
+	MutedBy   string `json:"mutedBy"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type UserUnmutedData struct {
+	RoomID string `json:"roomId"`
+	UserID string `json:"userId"`
+}
+
+type MuteStatusData struct {
+	RoomID    string `json:"roomId"`
+	IsMuted   bool   `json:"isMuted"`
+	ExpiresAt string `json:"expiresAt,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type DeleteMessageData struct {
+	RoomID    string `json:"roomId"`
+	MessageID string `json:"messageId"`
+}
+
+type MessageDeletedData struct {
+	RoomID    string `json:"roomId"`
+	MessageID string `json:"messageId"`
+	DeletedBy string `json:"deletedBy"`
+}

@@ -64,6 +64,13 @@ type SyncData struct {
 	Reason    string  `json:"reason"`
 }
 
+// MuteInfo tracks mute state for a user
+type MuteInfo struct {
+	ExpiresAt time.Time `json:"expiresAt"`
+	MutedBy   string    `json:"mutedBy"`
+	Reason    string    `json:"reason,omitempty"`
+}
+
 // Room represents a watch party room state (in-memory only).
 type Room struct {
 	ID                   string                            `json:"id"`
@@ -74,6 +81,8 @@ type Room struct {
 	CinemaAvatars        map[string]json.RawMessage        `json:"cinemaAvatars"` // userID -> last avatar state
 	WebcamParticipants   map[string]WebcamStateParticipant `json:"webcamParticipants"`
 	FaceModeParticipants map[string]bool                   `json:"faceModeParticipants"` // userID -> face mode enabled
+	Queue                []QueueItem                       `json:"queue"`                // Video queue
+	MutedUsers           map[string]MuteInfo               `json:"mutedUsers"`           // userID -> mute info
 	IsActive             bool                              `json:"isActive"`
 	CreatedAt            time.Time                         `json:"createdAt"`
 	CurrentVideo         SyncData                          `json:"currentVideo"`
@@ -225,6 +234,8 @@ func createRoom(hostID, roomName string) *Room {
 		Presence:             make(map[string]string),
 		WebcamParticipants:   make(map[string]WebcamStateParticipant),
 		FaceModeParticipants: make(map[string]bool),
+		Queue:                make([]QueueItem, 0),
+		MutedUsers:           make(map[string]MuteInfo),
 		IsActive:             true,
 		CreatedAt:            time.Now(),
 		CurrentVideo:         SyncData{},
@@ -252,6 +263,8 @@ func joinRoom(roomID, userID, requestedRole string) (string, bool, error) {
 			CinemaAvatars:        make(map[string]json.RawMessage),
 			WebcamParticipants:   make(map[string]WebcamStateParticipant),
 			FaceModeParticipants: make(map[string]bool),
+			Queue:                make([]QueueItem, 0),
+			MutedUsers:           make(map[string]MuteInfo),
 			IsActive:             true,
 			CreatedAt:            time.Now(),
 		}
@@ -1712,6 +1725,497 @@ func handleGetFaceModeState(client *Client, message Message) {
 	broadcastToSpecificUser(client.userID, "face_mode_state", response)
 }
 
+// ============================================================================
+// QUEUE MANAGEMENT HANDLERS
+// ============================================================================
+
+// handleQueueAdd adds a video to the room's queue
+func handleQueueAdd(client *Client, message Message) {
+	var data QueueAddData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing queue add data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid queue add data")
+		return
+	}
+
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to add to queue")
+		return
+	}
+
+	// Create the queue item
+	item := QueueItem{
+		ID:         fmt.Sprintf("qi_%d", time.Now().UnixNano()),
+		VideoURL:   data.VideoURL,
+		VideoTitle: data.VideoTitle,
+		AddedBy:    data.AddedBy,
+		AddedAt:    time.Now().UnixMilli(),
+	}
+
+	// Add to room queue
+	roomMutex.Lock()
+	room, exists := rooms[data.RoomID]
+	if !exists {
+		roomMutex.Unlock()
+		sendErrorResponse(client, "ROOM_NOT_FOUND", "Room not found")
+		return
+	}
+	if room.Queue == nil {
+		room.Queue = make([]QueueItem, 0)
+	}
+	room.Queue = append(room.Queue, item)
+	queueCopy := make([]QueueItem, len(room.Queue))
+	copy(queueCopy, room.Queue)
+	roomMutex.Unlock()
+
+	// Broadcast updated queue to all participants
+	broadcastToRoom(data.RoomID, "queue_updated", QueueUpdatedData{
+		RoomID: data.RoomID,
+		Queue:  queueCopy,
+	})
+
+	logRealtime("queue_add", map[string]interface{}{
+		"roomId":  data.RoomID,
+		"userId":  client.userID,
+		"itemId":  item.ID,
+		"videoUrl": data.VideoURL,
+	})
+}
+
+// handleQueueRemove removes a video from the room's queue
+func handleQueueRemove(client *Client, message Message) {
+	var data QueueRemoveData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing queue remove data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid queue remove data")
+		return
+	}
+
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to remove from queue")
+		return
+	}
+
+	roomMutex.Lock()
+	room, exists := rooms[data.RoomID]
+	if !exists {
+		roomMutex.Unlock()
+		sendErrorResponse(client, "ROOM_NOT_FOUND", "Room not found")
+		return
+	}
+
+	// Find and remove the item
+	found := false
+	for i, item := range room.Queue {
+		if item.ID == data.QueueItemID {
+			room.Queue = append(room.Queue[:i], room.Queue[i+1:]...)
+			found = true
+			break
+		}
+	}
+	queueCopy := make([]QueueItem, len(room.Queue))
+	copy(queueCopy, room.Queue)
+	roomMutex.Unlock()
+
+	if !found {
+		sendErrorResponse(client, "ITEM_NOT_FOUND", "Queue item not found")
+		return
+	}
+
+	// Broadcast updated queue
+	broadcastToRoom(data.RoomID, "queue_updated", QueueUpdatedData{
+		RoomID: data.RoomID,
+		Queue:  queueCopy,
+	})
+
+	logRealtime("queue_remove", map[string]interface{}{
+		"roomId": data.RoomID,
+		"userId": client.userID,
+		"itemId": data.QueueItemID,
+	})
+}
+
+// handleQueueReorder reorders a video in the queue
+func handleQueueReorder(client *Client, message Message) {
+	var data QueueReorderData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing queue reorder data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid queue reorder data")
+		return
+	}
+
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to reorder queue")
+		return
+	}
+
+	// Validate host permission for reordering
+	if err := validateHostPermission(data.RoomID, client.userID, "reorder queue"); err != nil {
+		sendErrorResponse(client, "PERMISSION_DENIED", "Only host can reorder queue")
+		return
+	}
+
+	roomMutex.Lock()
+	room, exists := rooms[data.RoomID]
+	if !exists {
+		roomMutex.Unlock()
+		sendErrorResponse(client, "ROOM_NOT_FOUND", "Room not found")
+		return
+	}
+
+	// Find the item
+	var itemIndex int = -1
+	var item QueueItem
+	for i, qi := range room.Queue {
+		if qi.ID == data.QueueItemID {
+			itemIndex = i
+			item = qi
+			break
+		}
+	}
+
+	if itemIndex == -1 {
+		roomMutex.Unlock()
+		sendErrorResponse(client, "ITEM_NOT_FOUND", "Queue item not found")
+		return
+	}
+
+	// Remove from old position
+	room.Queue = append(room.Queue[:itemIndex], room.Queue[itemIndex+1:]...)
+
+	// Insert at new position
+	newIndex := data.NewIndex
+	if newIndex < 0 {
+		newIndex = 0
+	}
+	if newIndex > len(room.Queue) {
+		newIndex = len(room.Queue)
+	}
+
+	// Insert at new position
+	room.Queue = append(room.Queue[:newIndex], append([]QueueItem{item}, room.Queue[newIndex:]...)...)
+
+	queueCopy := make([]QueueItem, len(room.Queue))
+	copy(queueCopy, room.Queue)
+	roomMutex.Unlock()
+
+	// Broadcast updated queue
+	broadcastToRoom(data.RoomID, "queue_updated", QueueUpdatedData{
+		RoomID: data.RoomID,
+		Queue:  queueCopy,
+	})
+
+	logRealtime("queue_reorder", map[string]interface{}{
+		"roomId":   data.RoomID,
+		"userId":   client.userID,
+		"itemId":   data.QueueItemID,
+		"newIndex": data.NewIndex,
+	})
+}
+
+// handleQueueNext advances to the next video in the queue
+func handleQueueNext(client *Client, message Message) {
+	var data QueueNextData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing queue next data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid queue next data")
+		return
+	}
+
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to skip to next")
+		return
+	}
+
+	// Validate host permission
+	if err := validateHostPermission(data.RoomID, client.userID, "skip to next in queue"); err != nil {
+		sendErrorResponse(client, "PERMISSION_DENIED", "Only host can skip to next video")
+		return
+	}
+
+	roomMutex.Lock()
+	room, exists := rooms[data.RoomID]
+	if !exists || len(room.Queue) == 0 {
+		roomMutex.Unlock()
+		sendErrorResponse(client, "QUEUE_EMPTY", "Queue is empty")
+		return
+	}
+
+	// Pop the first item
+	nextItem := room.Queue[0]
+	room.Queue = room.Queue[1:]
+	queueCopy := make([]QueueItem, len(room.Queue))
+	copy(queueCopy, room.Queue)
+	roomMutex.Unlock()
+
+	// Broadcast autoplay event for the next item
+	broadcastToRoom(data.RoomID, "queue_autoplay", QueueAutoplayData{
+		RoomID: data.RoomID,
+		Item:   nextItem,
+	})
+
+	// Broadcast updated queue
+	broadcastToRoom(data.RoomID, "queue_updated", QueueUpdatedData{
+		RoomID: data.RoomID,
+		Queue:  queueCopy,
+	})
+
+	logRealtime("queue_next", map[string]interface{}{
+		"roomId": data.RoomID,
+		"userId": client.userID,
+		"itemId": nextItem.ID,
+	})
+}
+
+// handleQueueCountdown broadcasts a countdown before the next video plays
+func handleQueueCountdown(client *Client, message Message) {
+	var data QueueCountdownData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing queue countdown data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid queue countdown data")
+		return
+	}
+
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room")
+		return
+	}
+
+	// Validate host permission
+	if err := validateHostPermission(data.RoomID, client.userID, "start countdown"); err != nil {
+		sendErrorResponse(client, "PERMISSION_DENIED", "Only host can start countdown")
+		return
+	}
+
+	// Broadcast countdown to all participants
+	broadcastToRoom(data.RoomID, "queue_countdown", data)
+
+	logRealtime("queue_countdown", map[string]interface{}{
+		"roomId":           data.RoomID,
+		"userId":           client.userID,
+		"secondsRemaining": data.SecondsRemaining,
+	})
+}
+
+// handleQueueAutoplay broadcasts when a queued video starts playing automatically
+func handleQueueAutoplay(client *Client, message Message) {
+	var data QueueAutoplayData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing queue autoplay data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid queue autoplay data")
+		return
+	}
+
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room")
+		return
+	}
+
+	// Validate host permission
+	if err := validateHostPermission(data.RoomID, client.userID, "autoplay"); err != nil {
+		sendErrorResponse(client, "PERMISSION_DENIED", "Only host can trigger autoplay")
+		return
+	}
+
+	// Broadcast to room
+	broadcastToRoom(data.RoomID, "queue_autoplay", data)
+
+	logRealtime("queue_autoplay", map[string]interface{}{
+		"roomId": data.RoomID,
+		"userId": client.userID,
+		"itemId": data.Item.ID,
+	})
+}
+
+// ============================================================================
+// ROLE AND MODERATION HANDLERS
+// ============================================================================
+
+// handleRoleChanged broadcasts when a user's role changes
+func handleRoleChanged(client *Client, message Message) {
+	var data RoleChangedData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing role changed data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid role changed data")
+		return
+	}
+
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room")
+		return
+	}
+
+	// Validate host permission
+	if err := validateHostPermission(data.RoomID, client.userID, "change roles"); err != nil {
+		sendErrorResponse(client, "PERMISSION_DENIED", "Only host can change roles")
+		return
+	}
+
+	// Update room state
+	roomMutex.Lock()
+	if room, exists := rooms[data.RoomID]; exists {
+		room.Participants[data.UserID] = data.NewRole
+	}
+	roomMutex.Unlock()
+
+	// Broadcast role change to all participants
+	broadcastToRoom(data.RoomID, "role_changed", data)
+
+	logRealtime("role_changed", map[string]interface{}{
+		"roomId":    data.RoomID,
+		"userId":    data.UserID,
+		"newRole":   data.NewRole,
+		"changedBy": data.ChangedBy,
+	})
+}
+
+// handleChatMute mutes a user in the room chat
+func handleChatMute(client *Client, message Message) {
+	var data ChatMuteData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing chat mute data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid chat mute data")
+		return
+	}
+
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room")
+		return
+	}
+
+	// Validate host permission
+	if err := validateHostPermission(data.RoomID, client.userID, "mute users"); err != nil {
+		sendErrorResponse(client, "PERMISSION_DENIED", "Only host can mute users")
+		return
+	}
+
+	// Calculate expiration time
+	expiresAt := time.Now().Add(time.Duration(data.DurationMinutes) * time.Minute)
+
+	// Store mute state
+	roomMutex.Lock()
+	room, exists := rooms[data.RoomID]
+	if !exists {
+		roomMutex.Unlock()
+		sendErrorResponse(client, "ROOM_NOT_FOUND", "Room not found")
+		return
+	}
+	if room.MutedUsers == nil {
+		room.MutedUsers = make(map[string]MuteInfo)
+	}
+	room.MutedUsers[data.TargetUserID] = MuteInfo{
+		ExpiresAt: expiresAt,
+		MutedBy:   client.userID,
+		Reason:    data.Reason,
+	}
+	roomMutex.Unlock()
+
+	// Broadcast mute event to room
+	broadcastToRoom(data.RoomID, "user_muted", UserMutedData{
+		RoomID:    data.RoomID,
+		UserID:    data.TargetUserID,
+		ExpiresAt: expiresAt.Format(time.RFC3339),
+		MutedBy:   client.userID,
+		Reason:    data.Reason,
+	})
+
+	// Send mute status to the muted user
+	broadcastToSpecificUser(data.TargetUserID, "mute_status", MuteStatusData{
+		RoomID:    data.RoomID,
+		IsMuted:   true,
+		ExpiresAt: expiresAt.Format(time.RFC3339),
+		Reason:    data.Reason,
+	})
+
+	logRealtime("chat_mute", map[string]interface{}{
+		"roomId":          data.RoomID,
+		"targetUserId":    data.TargetUserID,
+		"mutedBy":         client.userID,
+		"durationMinutes": data.DurationMinutes,
+	})
+}
+
+// handleChatUnmute unmutes a user in the room chat
+func handleChatUnmute(client *Client, message Message) {
+	var data ChatUnmuteData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing chat unmute data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid chat unmute data")
+		return
+	}
+
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room")
+		return
+	}
+
+	// Validate host permission
+	if err := validateHostPermission(data.RoomID, client.userID, "unmute users"); err != nil {
+		sendErrorResponse(client, "PERMISSION_DENIED", "Only host can unmute users")
+		return
+	}
+
+	// Remove mute state
+	roomMutex.Lock()
+	room, exists := rooms[data.RoomID]
+	if exists && room.MutedUsers != nil {
+		delete(room.MutedUsers, data.TargetUserID)
+	}
+	roomMutex.Unlock()
+
+	// Broadcast unmute event to room
+	broadcastToRoom(data.RoomID, "user_unmuted", UserUnmutedData{
+		RoomID: data.RoomID,
+		UserID: data.TargetUserID,
+	})
+
+	// Send mute status to the unmuted user
+	broadcastToSpecificUser(data.TargetUserID, "mute_status", MuteStatusData{
+		RoomID:  data.RoomID,
+		IsMuted: false,
+	})
+
+	logRealtime("chat_unmute", map[string]interface{}{
+		"roomId":       data.RoomID,
+		"targetUserId": data.TargetUserID,
+		"unmutedBy":    client.userID,
+	})
+}
+
+// handleDeleteMessage handles message deletion by moderators
+func handleDeleteMessage(client *Client, message Message) {
+	var data DeleteMessageData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing delete message data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid delete message data")
+		return
+	}
+
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room")
+		return
+	}
+
+	// Validate host permission
+	if err := validateHostPermission(data.RoomID, client.userID, "delete messages"); err != nil {
+		sendErrorResponse(client, "PERMISSION_DENIED", "Only host can delete messages")
+		return
+	}
+
+	// Broadcast message deletion to room
+	broadcastToRoom(data.RoomID, "message_deleted", MessageDeletedData{
+		RoomID:    data.RoomID,
+		MessageID: data.MessageID,
+		DeletedBy: client.userID,
+	})
+
+	logRealtime("delete_message", map[string]interface{}{
+		"roomId":    data.RoomID,
+		"messageId": data.MessageID,
+		"deletedBy": client.userID,
+	})
+}
+
 // handleGetCinemaAvatars sends all current avatar states to the requester (late joiner)
 func handleGetCinemaAvatars(client *Client, message Message) {
 	var req struct {
@@ -1868,6 +2372,29 @@ func handleClient(client *Client) {
 			handleFaceModeToggle(client, message)
 		case "get_face_mode_state":
 			handleGetFaceModeState(client, message)
+		// QUEUE MANAGEMENT
+		case "queue_add":
+			handleQueueAdd(client, message)
+		case "queue_remove":
+			handleQueueRemove(client, message)
+		case "queue_reorder":
+			handleQueueReorder(client, message)
+		case "queue_next":
+			handleQueueNext(client, message)
+		case "queue_countdown":
+			handleQueueCountdown(client, message)
+		case "queue_autoplay":
+			handleQueueAutoplay(client, message)
+		// ROLE MANAGEMENT
+		case "role_changed":
+			handleRoleChanged(client, message)
+		// CHAT MODERATION
+		case "chat_mute":
+			handleChatMute(client, message)
+		case "chat_unmute":
+			handleChatUnmute(client, message)
+		case "delete_message":
+			handleDeleteMessage(client, message)
 		// APPLICATION-LEVEL HEARTBEAT
 		// Browser WebSocket API can't send protocol-level pings,
 		// so clients send JSON ping events to detect zombie connections.
