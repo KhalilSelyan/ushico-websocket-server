@@ -312,6 +312,11 @@ func leaveRoom(roomID, userID string) error {
 		delete(room.WebcamParticipants, userID)
 	}
 
+	// If session host leaves, clear session host (control reverts to owner)
+	if room.SessionHostID == userID {
+		room.SessionHostID = ""
+	}
+
 	// If no participants left, deactivate room
 	if len(room.Participants) == 0 {
 		room.IsActive = false
@@ -585,8 +590,16 @@ func handleLeaveRoom(client *Client, message Message) {
 		return
 	}
 
-	// Check if user was host before leaving
+	// Check if user was host or session host before leaving
 	wasHost := isRoomHost(roomData.RoomID, client.userID)
+	wasSessionHost := false
+	ownerID := ""
+	roomMutex.RLock()
+	if room, exists := rooms[roomData.RoomID]; exists {
+		wasSessionHost = room.SessionHostID == client.userID
+		ownerID = room.HostID
+	}
+	roomMutex.RUnlock()
 
 	if err := leaveRoom(roomData.RoomID, client.userID); err != nil {
 		log.Printf("Error leaving room: %v", err)
@@ -632,6 +645,23 @@ func handleLeaveRoom(client *Client, message Message) {
 			Data:    transferData,
 		}
 		broadcast <- transferMessage
+	}
+
+	// If session host left, broadcast session control reverted to owner
+	if wasSessionHost {
+		sessionData, _ := json.Marshal(SessionControlChangedData{
+			RoomID:          roomData.RoomID,
+			SessionHostID:   "",
+			SessionHostName: "",
+			OwnerID:         ownerID,
+		})
+
+		sessionMessage := Message{
+			Channel: fmt.Sprintf("room-%s", roomData.RoomID),
+			Event:   "session_control_changed",
+			Data:    sessionData,
+		}
+		broadcast <- sessionMessage
 	}
 
 	// User left room successfully
