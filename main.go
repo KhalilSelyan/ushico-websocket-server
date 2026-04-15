@@ -778,6 +778,101 @@ func handleTransferHost(client *Client, message Message) {
 	// Host transferred successfully
 }
 
+func handleTransferSessionControl(client *Client, message Message) {
+	var data TransferSessionControlData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing transfer session control data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid transfer session control data")
+		return
+	}
+
+	// Only room owner can delegate session control
+	if !isRoomOwner(data.RoomID, client.userID) {
+		sendErrorResponse(client, "PERMISSION_DENIED", "Only room owner can delegate playback control")
+		return
+	}
+
+	// Update session host
+	roomMutex.Lock()
+	room, exists := rooms[data.RoomID]
+	if !exists {
+		roomMutex.Unlock()
+		sendErrorResponse(client, "ROOM_NOT_FOUND", "Room not found")
+		return
+	}
+	room.SessionHostID = data.NewHostID
+	ownerID := room.HostID
+	roomMutex.Unlock()
+
+	// Broadcast session control change
+	responseData, _ := json.Marshal(SessionControlChangedData{
+		RoomID:          data.RoomID,
+		SessionHostID:   data.NewHostID,
+		SessionHostName: data.NewHostName,
+		OwnerID:         ownerID,
+	})
+
+	broadcast <- Message{
+		Channel: fmt.Sprintf("room-%s", data.RoomID),
+		Event:   "session_control_changed",
+		Data:    responseData,
+	}
+
+	logRealtime("session_control_transferred", map[string]interface{}{
+		"roomId":        data.RoomID,
+		"ownerId":       client.userID,
+		"sessionHostId": data.NewHostID,
+	})
+}
+
+func handleReclaimSessionControl(client *Client, message Message) {
+	var data ReclaimSessionControlData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing reclaim session control data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid reclaim session control data")
+		return
+	}
+
+	// Only room owner can reclaim control
+	if !isRoomOwner(data.RoomID, client.userID) {
+		sendErrorResponse(client, "PERMISSION_DENIED", "Only room owner can reclaim playback control")
+		return
+	}
+
+	// Clear session host (owner regains control)
+	roomMutex.Lock()
+	room, exists := rooms[data.RoomID]
+	if !exists {
+		roomMutex.Unlock()
+		sendErrorResponse(client, "ROOM_NOT_FOUND", "Room not found")
+		return
+	}
+	previousSessionHost := room.SessionHostID
+	room.SessionHostID = ""
+	ownerID := room.HostID
+	roomMutex.Unlock()
+
+	// Broadcast session control change
+	responseData, _ := json.Marshal(SessionControlChangedData{
+		RoomID:          data.RoomID,
+		SessionHostID:   "",
+		SessionHostName: "",
+		OwnerID:         ownerID,
+	})
+
+	broadcast <- Message{
+		Channel: fmt.Sprintf("room-%s", data.RoomID),
+		Event:   "session_control_changed",
+		Data:    responseData,
+	}
+
+	logRealtime("session_control_reclaimed", map[string]interface{}{
+		"roomId":              data.RoomID,
+		"ownerId":             client.userID,
+		"previousSessionHost": previousSessionHost,
+	})
+}
+
 func handleRoomMessage(client *Client, message Message) {
 	// Extract room ID from channel
 	roomID := strings.TrimPrefix(message.Channel, "room-")
@@ -2669,6 +2764,10 @@ func handleClient(client *Client) {
 			handleGetCurrentVideoState(client, message)
 		case "transfer_host":
 			handleTransferHost(client, message)
+		case "transfer_session_control":
+			handleTransferSessionControl(client, message)
+		case "reclaim_session_control":
+			handleReclaimSessionControl(client, message)
 		case "room_message":
 			handleRoomMessage(client, message)
 		case "sync_room_state":
