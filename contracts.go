@@ -324,3 +324,22 @@ type MovieRejectedData struct {
 	ProposalID string `json:"proposalId"`
 	Reason     string `json:"reason"` // "host", "timeout", "majority_down"
 }
+
+// Session control types for temporary playback delegation
+
+type TransferSessionControlData struct {
+	RoomID      string `json:"roomId"`
+	NewHostID   string `json:"newHostId"`
+	NewHostName string `json:"newHostName"`
+}
+
+type ReclaimSessionControlData struct {
+	RoomID string `json:"roomId"`
+}
+
+type SessionControlChangedData struct {
+	RoomID          string `json:"roomId"`
+	SessionHostID   string `json:"sessionHostId"`   // "" means owner has control
+	SessionHostName string `json:"sessionHostName"` // "" when owner has control
+	OwnerID         string `json:"ownerId"`         // permanent room owner
+}
