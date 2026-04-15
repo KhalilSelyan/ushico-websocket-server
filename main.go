@@ -340,6 +340,39 @@ func isRoomHost(roomID, userID string) bool {
 	return room.HostID == userID
 }
 
+// getEffectiveHost returns the user who currently controls playback.
+// Returns SessionHostID if set, otherwise falls back to HostID.
+func getEffectiveHost(roomID string) string {
+	roomMutex.RLock()
+	defer roomMutex.RUnlock()
+
+	room, exists := rooms[roomID]
+	if !exists {
+		return ""
+	}
+	if room.SessionHostID != "" {
+		return room.SessionHostID
+	}
+	return room.HostID
+}
+
+// isEffectiveHost checks if user currently controls playback.
+func isEffectiveHost(roomID, userID string) bool {
+	return getEffectiveHost(roomID) == userID
+}
+
+// isRoomOwner checks if user is the permanent room owner (can reclaim control).
+func isRoomOwner(roomID, userID string) bool {
+	roomMutex.RLock()
+	defer roomMutex.RUnlock()
+
+	room, exists := rooms[roomID]
+	if !exists {
+		return false
+	}
+	return room.HostID == userID
+}
+
 // transferHost transfers host privileges to another user.
 func transferHost(roomID, newHostID string) error {
 	roomMutex.Lock()
@@ -447,10 +480,10 @@ func sendErrorResponse(client *Client, errorCode, message string) {
 	}
 }
 
-// validateHostPermission checks if user has host permission for the action.
+// validateHostPermission checks if user has playback control permission.
 func validateHostPermission(roomID, userID string, action string) error {
-	if !isRoomHost(roomID, userID) {
-		return fmt.Errorf("permission denied: only host can %s", action)
+	if !isEffectiveHost(roomID, userID) {
+		return fmt.Errorf("permission denied: only session host can %s", action)
 	}
 	return nil
 }
