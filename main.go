@@ -75,6 +75,7 @@ type MuteInfo struct {
 type Room struct {
 	ID                   string                            `json:"id"`
 	HostID               string                            `json:"hostId"`
+	SessionHostID        string                            `json:"sessionHostId,omitempty"` // Temporary playback controller (falls back to HostID if empty)
 	Name                 string                            `json:"name"`
 	Participants         map[string]string                 `json:"participants"`  // userID -> role mapping
 	Presence             map[string]string                 `json:"presence"`      // userID -> presence state (active, away, offline)
