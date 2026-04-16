@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -11,6 +13,13 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+)
+
+// Binary message types for high-frequency updates
+const (
+	BinaryMsgAvatarUpdate  = 0x01
+	BinaryMsgAvatarBatch   = 0x02
+	BinaryMsgPresenceUpdate = 0x03
 )
 
 func logRealtime(event string, fields map[string]interface{}) {
@@ -106,17 +115,25 @@ type ErrorResponse struct {
 	Code    string `json:"code"`
 }
 
+// BinaryBroadcast holds a binary message to broadcast to a room
+type BinaryBroadcast struct {
+	RoomID   string
+	SenderID string
+	Data     []byte
+}
+
 // Global variables for managing clients and messages.
 var (
-	clients      = make(map[*Client]bool)            // Map of connected clients.
-	broadcast    = make(chan Message, 256)           // Buffered channel for broadcasting messages.
-	register     = make(chan *Client)                // Channel for registering new clients.
-	unregister   = make(chan *Client)                // Channel for unregistering clients.
-	mutex        = &sync.RWMutex{}                   // Read-write mutex to protect the clients map.
-	rooms        = make(map[string]*Room)            // Active rooms.
-	roomMutex    = &sync.RWMutex{}                   // Protect rooms map.
-	channelSubs  = make(map[string]map[*Client]bool) // Channel -> subscribed clients (for O(1) lookup).
-	channelMutex = &sync.RWMutex{}                   // Protect channelSubs map.
+	clients         = make(map[*Client]bool)            // Map of connected clients.
+	broadcast       = make(chan Message, 256)           // Buffered channel for broadcasting messages.
+	binaryBroadcast = make(chan BinaryBroadcast, 256)   // Buffered channel for binary broadcasts.
+	register        = make(chan *Client)                // Channel for registering new clients.
+	unregister      = make(chan *Client)                // Channel for unregistering clients.
+	mutex           = &sync.RWMutex{}                   // Read-write mutex to protect the clients map.
+	rooms           = make(map[string]*Room)            // Active rooms.
+	roomMutex       = &sync.RWMutex{}                   // Protect rooms map.
+	channelSubs     = make(map[string]map[*Client]bool) // Channel -> subscribed clients (for O(1) lookup).
+	channelMutex    = &sync.RWMutex{}                   // Protect channelSubs map.
 )
 
 // Subscribe adds the client to the specified channel.
@@ -209,6 +226,222 @@ func (c *Client) safeWriteControl(messageType int, data []byte, deadline time.Ti
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	return c.conn.WriteControl(messageType, data, deadline)
+}
+
+// safeWriteBinary safely writes binary data to the WebSocket connection.
+func (c *Client) safeWriteBinary(data []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.conn.WriteMessage(websocket.BinaryMessage, data)
+}
+
+// decodeBinaryAvatarUpdate extracts roomID from a binary avatar update message.
+// Format: [type:u8][px:f32][py:f32][pz:f32][ry:f32][anim:u8][userIdLen:u8][userNameLen:u8][roomIdLen:u8][avatarModelLen:u8][strings...]
+func decodeBinaryAvatarUpdate(data []byte) (roomID string, err error) {
+	if len(data) < 22 { // Minimum: 1+16+1+4 = 22 bytes
+		return "", fmt.Errorf("binary message too short")
+	}
+	if data[0] != BinaryMsgAvatarUpdate {
+		return "", fmt.Errorf("not an avatar update message")
+	}
+
+	// Skip: type(1) + position(12) + rotation(4) + anim(1) = 18 bytes
+	offset := 18
+	userIdLen := int(data[offset])
+	userNameLen := int(data[offset+1])
+	roomIdLen := int(data[offset+2])
+	// avatarModelLen := int(data[offset+3])
+	offset += 4
+
+	// Skip userId and userName to get to roomId
+	offset += userIdLen + userNameLen
+
+	if offset+roomIdLen > len(data) {
+		return "", fmt.Errorf("invalid string lengths")
+	}
+
+	roomID = string(data[offset : offset+roomIdLen])
+	return roomID, nil
+}
+
+// encodeBinaryAvatarFromJSON converts JSON avatar data to binary format for efficient broadcast
+func encodeBinaryAvatarFromJSON(data json.RawMessage) ([]byte, error) {
+	var avatar struct {
+		RoomID      string  `json:"roomId"`
+		UserID      string  `json:"userId"`
+		UserName    string  `json:"userName"`
+		PX          float64 `json:"px"`
+		PY          float64 `json:"py"`
+		PZ          float64 `json:"pz"`
+		RY          float64 `json:"ry"`
+		Anim        string  `json:"anim"`
+		AvatarModel string  `json:"avatarModel,omitempty"`
+	}
+	if err := json.Unmarshal(data, &avatar); err != nil {
+		return nil, err
+	}
+
+	animIndex := getAnimationIndex(avatar.Anim)
+	userIdBytes := []byte(avatar.UserID)
+	userNameBytes := []byte(avatar.UserName)
+	roomIdBytes := []byte(avatar.RoomID)
+	avatarModelBytes := []byte(avatar.AvatarModel)
+
+	totalSize := 1 + 16 + 1 + 4 + len(userIdBytes) + len(userNameBytes) + len(roomIdBytes) + len(avatarModelBytes)
+	buf := make([]byte, totalSize)
+	offset := 0
+
+	buf[offset] = BinaryMsgAvatarUpdate
+	offset++
+
+	binary.LittleEndian.PutUint32(buf[offset:], math.Float32bits(float32(avatar.PX)))
+	offset += 4
+	binary.LittleEndian.PutUint32(buf[offset:], math.Float32bits(float32(avatar.PY)))
+	offset += 4
+	binary.LittleEndian.PutUint32(buf[offset:], math.Float32bits(float32(avatar.PZ)))
+	offset += 4
+	binary.LittleEndian.PutUint32(buf[offset:], math.Float32bits(float32(avatar.RY)))
+	offset += 4
+
+	buf[offset] = animIndex
+	offset++
+
+	buf[offset] = byte(len(userIdBytes))
+	buf[offset+1] = byte(len(userNameBytes))
+	buf[offset+2] = byte(len(roomIdBytes))
+	buf[offset+3] = byte(len(avatarModelBytes))
+	offset += 4
+
+	copy(buf[offset:], userIdBytes)
+	offset += len(userIdBytes)
+	copy(buf[offset:], userNameBytes)
+	offset += len(userNameBytes)
+	copy(buf[offset:], roomIdBytes)
+	offset += len(roomIdBytes)
+	copy(buf[offset:], avatarModelBytes)
+
+	return buf, nil
+}
+
+func getAnimationIndex(anim string) byte {
+	animations := map[string]byte{
+		"idle": 0, "walk": 1, "sprint": 2, "sit": 3, "jump": 4,
+		"fall": 5, "crouch": 6, "die": 7, "emote-yes": 8, "emote-no": 9,
+		"interact-right": 10, "interact-left": 11, "attack-kick-right": 12,
+	}
+	if idx, ok := animations[anim]; ok {
+		return idx
+	}
+	return 0
+}
+
+// handleBinaryMessage processes incoming binary WebSocket messages
+func handleBinaryMessage(client *Client, data []byte) {
+	if len(data) < 1 {
+		return
+	}
+
+	msgType := data[0]
+	switch msgType {
+	case BinaryMsgAvatarUpdate:
+		roomID, err := decodeBinaryAvatarUpdate(data)
+		if err != nil {
+			log.Printf("Error decoding binary avatar update: %v", err)
+			return
+		}
+
+		// Store avatar state in room (decode to JSON for storage)
+		roomMutex.Lock()
+		if room, exists := rooms[roomID]; exists {
+			if room.CinemaAvatars == nil {
+				room.CinemaAvatars = make(map[string]json.RawMessage)
+			}
+			// Store as JSON for compatibility with get_cinema_avatars
+			avatarJSON := binaryAvatarToJSON(data)
+			if avatarJSON != nil {
+				room.CinemaAvatars[client.userID] = avatarJSON
+			}
+		}
+		roomMutex.Unlock()
+
+		// Broadcast binary to room (excluding sender)
+		binaryBroadcast <- BinaryBroadcast{
+			RoomID:   roomID,
+			SenderID: client.userID,
+			Data:     data,
+		}
+
+		logRealtime("cinema_avatar_update_binary", map[string]interface{}{
+			"roomId": roomID,
+			"userId": client.userID,
+			"bytes":  len(data),
+		})
+
+	default:
+		log.Printf("Unknown binary message type: %d", msgType)
+	}
+}
+
+// binaryAvatarToJSON converts binary avatar data to JSON for storage
+func binaryAvatarToJSON(data []byte) json.RawMessage {
+	if len(data) < 22 {
+		return nil
+	}
+
+	offset := 1 // Skip message type
+
+	px := math.Float32frombits(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	py := math.Float32frombits(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	pz := math.Float32frombits(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	ry := math.Float32frombits(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+
+	animIndex := data[offset]
+	offset++
+
+	animations := []string{"idle", "walk", "sprint", "sit", "jump", "fall", "crouch", "die", "emote-yes", "emote-no", "interact-right", "interact-left", "attack-kick-right"}
+	anim := "idle"
+	if int(animIndex) < len(animations) {
+		anim = animations[animIndex]
+	}
+
+	userIdLen := int(data[offset])
+	userNameLen := int(data[offset+1])
+	roomIdLen := int(data[offset+2])
+	avatarModelLen := int(data[offset+3])
+	offset += 4
+
+	if offset+userIdLen+userNameLen+roomIdLen+avatarModelLen > len(data) {
+		return nil
+	}
+
+	userId := string(data[offset : offset+userIdLen])
+	offset += userIdLen
+	userName := string(data[offset : offset+userNameLen])
+	offset += userNameLen
+	roomId := string(data[offset : offset+roomIdLen])
+	offset += roomIdLen
+	avatarModel := ""
+	if avatarModelLen > 0 {
+		avatarModel = string(data[offset : offset+avatarModelLen])
+	}
+
+	jsonData, _ := json.Marshal(map[string]interface{}{
+		"roomId":      roomId,
+		"userId":      userId,
+		"userName":    userName,
+		"px":          px,
+		"py":          py,
+		"pz":          pz,
+		"ry":          ry,
+		"anim":        anim,
+		"avatarModel": avatarModel,
+	})
+
+	return jsonData
 }
 
 // validateChatID checks if the chat ID is in the expected format (e.g., "user1--user2").
@@ -2761,11 +2994,18 @@ func handleClient(client *Client) {
 		return nil
 	})
 
+	// Send binary_supported announcement
+	binarySupportedData, _ := json.Marshal(map[string]interface{}{})
+	binarySupportedMsg := Message{Channel: "system", Event: "binary_supported", Data: binarySupportedData}
+	select {
+	case client.send <- binarySupportedMsg:
+	default:
+	}
+
 	// Main message handling loop.
 	for {
-		var message Message
-		// Read message from client.
-		err := client.conn.ReadJSON(&message)
+		// Read message from client (supports both text and binary).
+		messageType, rawData, err := client.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("Error reading message: %v", err)
@@ -2773,7 +3013,18 @@ func handleClient(client *Client) {
 			break
 		}
 
-		// Message received
+		// Handle binary messages
+		if messageType == websocket.BinaryMessage {
+			handleBinaryMessage(client, rawData)
+			continue
+		}
+
+		// Parse JSON message
+		var message Message
+		if err := json.Unmarshal(rawData, &message); err != nil {
+			log.Printf("Error parsing JSON message: %v", err)
+			continue
+		}
 
 		// Handle messages based on the Event field.
 		switch message.Event {
@@ -3050,6 +3301,22 @@ func handleMessages() {
 				default:
 					// Client's send buffer is full, log and skip
 					log.Printf("Client %s send buffer full, dropping message", client.userID)
+				}
+			}
+			channelMutex.RUnlock()
+
+		case binMsg := <-binaryBroadcast:
+			// Broadcast binary message to room subscribers (excluding sender)
+			channel := fmt.Sprintf("room-%s", binMsg.RoomID)
+			channelMutex.RLock()
+			for client := range channelSubs[channel] {
+				if client.userID != binMsg.SenderID {
+					// Send binary directly (bypass JSON send channel)
+					go func(c *Client, data []byte) {
+						if err := c.safeWriteBinary(data); err != nil {
+							log.Printf("Binary send failed for client %s: %v", c.userID, err)
+						}
+					}(client, binMsg.Data)
 				}
 			}
 			channelMutex.RUnlock()
