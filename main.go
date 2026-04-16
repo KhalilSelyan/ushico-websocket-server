@@ -17,9 +17,12 @@ import (
 
 // Binary message types for high-frequency updates
 const (
-	BinaryMsgAvatarUpdate  = 0x01
-	BinaryMsgAvatarBatch   = 0x02
+	BinaryMsgAvatarUpdate   = 0x01
+	BinaryMsgAvatarBatch    = 0x02
 	BinaryMsgPresenceUpdate = 0x03
+	BinaryMsgHostSync       = 0x04
+	BinaryMsgCinemaAnimation = 0x05
+	BinaryMsgVideoReaction  = 0x06
 )
 
 func logRealtime(event string, fields map[string]interface{}) {
@@ -264,6 +267,133 @@ func decodeBinaryAvatarUpdate(data []byte) (roomID string, err error) {
 	return roomID, nil
 }
 
+// decodeBinaryHostSync extracts roomID from binary host sync message
+// Format: msgType(1) + timestamp(8) + sentAt(8) + state(1) + reason(1) + roomIdLen(1) + urlLen(2) + videoIdLen(1) + roomId + url + videoId
+func decodeBinaryHostSync(data []byte) (roomID string, err error) {
+	if len(data) < 23 { // Minimum: 1+8+8+1+1+1+2+1 = 23 bytes header
+		return "", fmt.Errorf("binary host sync message too short")
+	}
+	if data[0] != BinaryMsgHostSync {
+		return "", fmt.Errorf("not a host sync message")
+	}
+
+	// Skip to lengths: type(1) + timestamp(8) + sentAt(8) + state(1) + reason(1) = 19
+	offset := 19
+	roomIdLen := int(data[offset])
+	offset += 1 + 2 + 1 // Skip roomIdLen(1) + urlLen(2) + videoIdLen(1)
+
+	if offset+roomIdLen > len(data) {
+		return "", fmt.Errorf("invalid room ID length")
+	}
+
+	roomID = string(data[offset : offset+roomIdLen])
+	return roomID, nil
+}
+
+// binaryHostSyncToSyncData converts binary host sync to SyncData struct for storage
+func binaryHostSyncToSyncData(data []byte) *SyncData {
+	if len(data) < 23 {
+		return nil
+	}
+
+	offset := 1 // Skip message type
+
+	timestamp := math.Float64frombits(binary.LittleEndian.Uint64(data[offset:]))
+	offset += 8
+	sentAt := int64(binary.LittleEndian.Uint64(data[offset:]))
+	offset += 8
+
+	stateIdx := data[offset]
+	offset++
+	reasonIdx := data[offset]
+	offset++
+
+	states := []string{"paused", "playing"}
+	reasons := []string{"tick", "play", "pause", "seek", "load", "resync", "ended"}
+
+	state := "paused"
+	if int(stateIdx) < len(states) {
+		state = states[stateIdx]
+	}
+	reason := "tick"
+	if int(reasonIdx) < len(reasons) {
+		reason = reasons[reasonIdx]
+	}
+
+	roomIdLen := int(data[offset])
+	offset++
+	urlLen := int(binary.LittleEndian.Uint16(data[offset:]))
+	offset += 2
+	videoIdLen := int(data[offset])
+	offset++
+
+	if offset+roomIdLen+urlLen+videoIdLen > len(data) {
+		return nil
+	}
+
+	roomID := string(data[offset : offset+roomIdLen])
+	offset += roomIdLen
+	url := string(data[offset : offset+urlLen])
+	offset += urlLen
+	videoID := string(data[offset : offset+videoIdLen])
+
+	return &SyncData{
+		Timestamp: timestamp,
+		URL:       url,
+		RoomID:    roomID,
+		State:     state,
+		VideoID:   videoID,
+		SentAt:    sentAt,
+		Reason:    reason,
+	}
+}
+
+// decodeBinaryCinemaAnimation extracts roomID from binary cinema animation message
+// Format: msgType(1) + animIndex(1) + roomIdLen(1) + userIdLen(1) + userNameLen(1) + roomId + userId + userName
+func decodeBinaryCinemaAnimation(data []byte) (roomID string, err error) {
+	if len(data) < 6 { // Minimum: 1+1+1+1+1+1 = 6 bytes header + at least 1 char roomId
+		return "", fmt.Errorf("binary cinema animation message too short")
+	}
+	if data[0] != BinaryMsgCinemaAnimation {
+		return "", fmt.Errorf("not a cinema animation message")
+	}
+
+	// Skip: type(1) + animIndex(1) = 2
+	offset := 2
+	roomIdLen := int(data[offset])
+	offset += 3 // Skip roomIdLen(1) + userIdLen(1) + userNameLen(1)
+
+	if offset+roomIdLen > len(data) {
+		return "", fmt.Errorf("invalid room ID length")
+	}
+
+	roomID = string(data[offset : offset+roomIdLen])
+	return roomID, nil
+}
+
+// decodeBinaryVideoReaction extracts roomID from binary video reaction message
+// Format: msgType(1) + videoTimestamp(8) + roomIdLen(1) + userIdLen(1) + userNameLen(1) + emojiLen(1) + reactionIdLen(1) + roomId + ...
+func decodeBinaryVideoReaction(data []byte) (roomID string, err error) {
+	if len(data) < 15 { // Minimum: 1+8+1+1+1+1+1+1 = 15 bytes header + at least 1 char roomId
+		return "", fmt.Errorf("binary video reaction message too short")
+	}
+	if data[0] != BinaryMsgVideoReaction {
+		return "", fmt.Errorf("not a video reaction message")
+	}
+
+	// Skip: type(1) + videoTimestamp(8) = 9
+	offset := 9
+	roomIdLen := int(data[offset])
+	offset += 5 // Skip roomIdLen(1) + userIdLen(1) + userNameLen(1) + emojiLen(1) + reactionIdLen(1)
+
+	if offset+roomIdLen > len(data) {
+		return "", fmt.Errorf("invalid room ID length")
+	}
+
+	roomID = string(data[offset : offset+roomIdLen])
+	return roomID, nil
+}
+
 // encodeBinaryAvatarFromJSON converts JSON avatar data to binary format for efficient broadcast
 func encodeBinaryAvatarFromJSON(data json.RawMessage) ([]byte, error) {
 	var avatar struct {
@@ -356,7 +486,6 @@ func handleBinaryMessage(client *Client, data []byte) {
 			if room.CinemaAvatars == nil {
 				room.CinemaAvatars = make(map[string]json.RawMessage)
 			}
-			// Store as JSON for compatibility with get_cinema_avatars
 			avatarJSON := binaryAvatarToJSON(data)
 			if avatarJSON != nil {
 				room.CinemaAvatars[client.userID] = avatarJSON
@@ -364,18 +493,46 @@ func handleBinaryMessage(client *Client, data []byte) {
 		}
 		roomMutex.Unlock()
 
-		// Broadcast binary to room (excluding sender)
-		binaryBroadcast <- BinaryBroadcast{
-			RoomID:   roomID,
-			SenderID: client.userID,
-			Data:     data,
+		binaryBroadcast <- BinaryBroadcast{RoomID: roomID, SenderID: client.userID, Data: data}
+		logRealtime("cinema_avatar_update_binary", map[string]interface{}{"roomId": roomID, "userId": client.userID, "bytes": len(data)})
+
+	case BinaryMsgHostSync:
+		roomID, err := decodeBinaryHostSync(data)
+		if err != nil {
+			log.Printf("Error decoding binary host sync: %v", err)
+			return
 		}
 
-		logRealtime("cinema_avatar_update_binary", map[string]interface{}{
-			"roomId": roomID,
-			"userId": client.userID,
-			"bytes":  len(data),
-		})
+		// Store current video state (decode to JSON)
+		roomMutex.Lock()
+		if room, exists := rooms[roomID]; exists {
+			syncData := binaryHostSyncToSyncData(data)
+			if syncData != nil {
+				room.CurrentVideo = *syncData
+			}
+		}
+		roomMutex.Unlock()
+
+		binaryBroadcast <- BinaryBroadcast{RoomID: roomID, SenderID: client.userID, Data: data}
+		logRealtime("host_sync_binary", map[string]interface{}{"roomId": roomID, "userId": client.userID, "bytes": len(data)})
+
+	case BinaryMsgCinemaAnimation:
+		roomID, err := decodeBinaryCinemaAnimation(data)
+		if err != nil {
+			log.Printf("Error decoding binary cinema animation: %v", err)
+			return
+		}
+		binaryBroadcast <- BinaryBroadcast{RoomID: roomID, SenderID: client.userID, Data: data}
+		logRealtime("cinema_animation_binary", map[string]interface{}{"roomId": roomID, "userId": client.userID, "bytes": len(data)})
+
+	case BinaryMsgVideoReaction:
+		roomID, err := decodeBinaryVideoReaction(data)
+		if err != nil {
+			log.Printf("Error decoding binary video reaction: %v", err)
+			return
+		}
+		binaryBroadcast <- BinaryBroadcast{RoomID: roomID, SenderID: client.userID, Data: data}
+		logRealtime("video_reaction_binary", map[string]interface{}{"roomId": roomID, "userId": client.userID, "bytes": len(data)})
 
 	default:
 		log.Printf("Unknown binary message type: %d", msgType)
