@@ -964,7 +964,110 @@ func handleJoinRoom(client *Client, message Message) {
 	}
 	broadcast <- responseMessage
 
-	// User joined room successfully
+	// Push current room state to the joining client immediately
+	// This prevents race conditions where client must request state after joining
+	go sendInitialRoomState(client, roomData.RoomID)
+}
+
+// sendInitialRoomState pushes all current room state to a newly joined client
+// This eliminates the race window between join and explicit state requests
+func sendInitialRoomState(client *Client, roomID string) {
+	roomMutex.RLock()
+	room, exists := rooms[roomID]
+	if !exists {
+		roomMutex.RUnlock()
+		return
+	}
+
+	// Copy all state under lock
+	var avatars []json.RawMessage
+	if room.CinemaAvatars != nil {
+		for uid, state := range room.CinemaAvatars {
+			if uid != client.userID {
+				avatars = append(avatars, state)
+			}
+		}
+	}
+
+	var webcamParticipants []WebcamStateParticipant
+	if room.WebcamParticipants != nil {
+		for _, p := range room.WebcamParticipants {
+			webcamParticipants = append(webcamParticipants, p)
+		}
+	}
+
+	var presenceParticipants []RoomPresenceParticipant
+	if room.Presence != nil {
+		for userID, state := range room.Presence {
+			presenceParticipants = append(presenceParticipants, RoomPresenceParticipant{
+				UserID:        userID,
+				UserName:      userID,
+				PresenceState: state,
+			})
+		}
+	}
+
+	// Copy current video state
+	currentVideo := room.CurrentVideo
+	roomMutex.RUnlock()
+
+	// Send avatar state
+	if avatars == nil {
+		avatars = []json.RawMessage{}
+	}
+	avatarData, _ := json.Marshal(CinemaAvatarStateResponse{
+		RoomID:  roomID,
+		Avatars: decodeCinemaAvatarStates(avatars),
+	})
+	client.send <- Message{
+		Channel: fmt.Sprintf("user-%s", client.userID),
+		Event:   "cinema_avatar_state",
+		Data:    avatarData,
+	}
+
+	// Send webcam state
+	webcamData, _ := json.Marshal(WebcamStateResponse{
+		RoomID:       roomID,
+		Participants: webcamParticipants,
+	})
+	client.send <- Message{
+		Channel: fmt.Sprintf("user-%s", client.userID),
+		Event:   "webcam_state",
+		Data:    webcamData,
+	}
+
+	// Send presence state
+	presenceData, _ := json.Marshal(RoomPresenceResponse{
+		RoomID:       roomID,
+		Participants: presenceParticipants,
+	})
+	client.send <- Message{
+		Channel: fmt.Sprintf("user-%s", client.userID),
+		Event:   "room_presence_status",
+		Data:    presenceData,
+	}
+
+	// Send current video state if exists
+	if currentVideo.URL != "" {
+		videoData, _ := json.Marshal(map[string]interface{}{
+			"roomId": roomID,
+			"sync":   currentVideo,
+		})
+		client.send <- Message{
+			Channel: fmt.Sprintf("user-%s", client.userID),
+			Event:   "room_video_state",
+			Data:    videoData,
+		}
+	}
+
+	logRealtime("initial_state_pushed", map[string]interface{}{
+		"roomId":       roomID,
+		"userId":       client.userID,
+		"avatarCount":  len(avatars),
+		"webcamCount":  len(webcamParticipants),
+		"presenceCount": len(presenceParticipants),
+		"hasVideo":     currentVideo.URL != "",
+	})
 }
 
 func handleLeaveRoom(client *Client, message Message) {
