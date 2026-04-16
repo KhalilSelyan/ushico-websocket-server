@@ -54,8 +54,10 @@ type Client struct {
 	writeMu      sync.Mutex        // Mutex to protect WebSocket writes.
 	userID       string            // User identifier for the client
 	rooms        map[string]string // roomID -> role mapping
+	roomChannels map[string]string // roomID -> pre-formatted channel name (e.g., "room-xyz")
 	lastPongTime time.Time         // Last time a pong was received from this client
-	send         chan Message      // Buffered channel for outgoing messages
+	send         chan Message      // Buffered channel for outgoing JSON messages
+	sendBinary   chan []byte       // Buffered channel for outgoing binary messages
 }
 
 // Message represents the structure of messages sent over WebSocket.
@@ -123,6 +125,25 @@ type BinaryBroadcast struct {
 	RoomID   string
 	SenderID string
 	Data     []byte
+}
+
+// Buffer pool for binary message encoding (reduces GC pressure)
+var binaryBufferPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 0, 512) // Pre-allocate common size for avatar updates
+		return &buf
+	},
+}
+
+// getBuffer gets a buffer from the pool
+func getBuffer() *[]byte {
+	return binaryBufferPool.Get().(*[]byte)
+}
+
+// putBuffer returns a buffer to the pool after resetting it
+func putBuffer(buf *[]byte) {
+	*buf = (*buf)[:0] // Reset length, keep capacity
+	binaryBufferPool.Put(buf)
 }
 
 // Global variables for managing clients and messages.
@@ -201,18 +222,33 @@ func (c *Client) unsubscribeAll() {
 	channelMutex.Unlock()
 }
 
-// writePump pumps messages from the send channel to the WebSocket connection.
+// writePump pumps messages from both JSON and binary channels to the WebSocket connection.
 // Runs in its own goroutine per client.
 func (c *Client) writePump() {
 	defer func() {
 		c.conn.Close()
 	}()
 
-	for message := range c.send {
-		err := c.safeWriteJSON(message)
-		if err != nil {
-			log.Printf("Error sending message to client %s: %v", c.userID, err)
-			return
+	for {
+		select {
+		case message, ok := <-c.send:
+			if !ok {
+				// Channel closed, exit
+				return
+			}
+			if err := c.safeWriteJSON(message); err != nil {
+				log.Printf("Error sending JSON to client %s: %v", c.userID, err)
+				return
+			}
+		case data, ok := <-c.sendBinary:
+			if !ok {
+				// Channel closed, exit
+				return
+			}
+			if err := c.safeWriteBinary(data); err != nil {
+				log.Printf("Error sending binary to client %s: %v", c.userID, err)
+				return
+			}
 		}
 	}
 }
@@ -830,7 +866,11 @@ func (c *Client) joinRoomAsClient(roomID, role string) {
 	if c.rooms == nil {
 		c.rooms = make(map[string]string)
 	}
+	if c.roomChannels == nil {
+		c.roomChannels = make(map[string]string)
+	}
 	c.rooms[roomID] = role
+	c.roomChannels[roomID] = "room-" + roomID // Pre-format channel name to avoid repeated allocations
 }
 
 // leaveRoomAsClient removes the client from a room.
@@ -838,6 +878,17 @@ func (c *Client) leaveRoomAsClient(roomID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.rooms, roomID)
+	delete(c.roomChannels, roomID)
+}
+
+// getRoomChannel returns the pre-formatted channel name for a room.
+func (c *Client) getRoomChannel(roomID string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ch, ok := c.roomChannels[roomID]; ok {
+		return ch
+	}
+	return "room-" + roomID // Fallback
 }
 
 // isInRoom checks if the client is in the specified room.
@@ -3443,14 +3494,16 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create a new client with buffered send channel.
+	// Create a new client with buffered send channels.
 	client := &Client{
 		conn:         conn,
 		channels:     make(map[string]bool),
 		userID:       userID,
 		rooms:        make(map[string]string),
-		lastPongTime: time.Now(),             // Initialize to now, will be updated on pong
-		send:         make(chan Message, 64), // Buffered channel for outgoing messages
+		roomChannels: make(map[string]string),
+		lastPongTime: time.Now(),              // Initialize to now, will be updated on pong
+		send:         make(chan Message, 256), // Buffered channel for outgoing JSON messages
+		sendBinary:   make(chan []byte, 256),  // Buffered channel for outgoing binary messages
 	}
 
 	log.Printf("New client connected from: %s with userID: %s", conn.RemoteAddr(), userID)
@@ -3544,8 +3597,9 @@ func handleMessages() {
 			mutex.Lock()
 			if _, ok := clients[client]; ok {
 				delete(clients, client)
-				// Close send channel to stop writePump goroutine
+				// Close send channels to stop writePump goroutine
 				close(client.send)
+				close(client.sendBinary)
 			}
 			mutex.Unlock()
 
@@ -3571,12 +3625,13 @@ func handleMessages() {
 			channelMutex.RLock()
 			for client := range channelSubs[channel] {
 				if client.userID != binMsg.SenderID {
-					// Send binary directly (bypass JSON send channel)
-					go func(c *Client, data []byte) {
-						if err := c.safeWriteBinary(data); err != nil {
-							log.Printf("Binary send failed for client %s: %v", c.userID, err)
-						}
-					}(client, binMsg.Data)
+					// Non-blocking send to client's binary channel (no goroutine spawn)
+					select {
+					case client.sendBinary <- binMsg.Data:
+						// Queued successfully
+					default:
+						log.Printf("Client %s binary buffer full, dropping message", client.userID)
+					}
 				}
 			}
 			channelMutex.RUnlock()
