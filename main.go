@@ -3093,6 +3093,61 @@ func handleMessages() {
 	}
 }
 
+// startReminderCron starts a background goroutine that calls the SvelteKit
+// reminder processing endpoint every minute.
+func startReminderCron() {
+	sveltekitURL := os.Getenv("SVELTEKIT_URL")
+	if sveltekitURL == "" {
+		log.Println("[reminders] SVELTEKIT_URL not set, reminder cron disabled")
+		return
+	}
+
+	apiSecret := os.Getenv("INTERNAL_API_SECRET")
+	endpoint := strings.TrimSuffix(sveltekitURL, "/") + "/api/internal/process-reminders"
+
+	ticker := time.NewTicker(1 * time.Minute)
+
+	go func() {
+		// Run once immediately on startup
+		processReminders(endpoint, apiSecret)
+
+		for range ticker.C {
+			processReminders(endpoint, apiSecret)
+		}
+	}()
+
+	log.Printf("[reminders] Reminder cron started, calling %s every minute\n", endpoint)
+}
+
+// processReminders calls the SvelteKit reminder endpoint.
+func processReminders(endpoint, apiSecret string) {
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	req, err := http.NewRequest("POST", endpoint, nil)
+	if err != nil {
+		log.Printf("[reminders] Failed to create request: %v\n", err)
+		return
+	}
+
+	if apiSecret != "" {
+		req.Header.Set("Authorization", "Bearer "+apiSecret)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[reminders] Failed to call endpoint: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[reminders] Endpoint returned status %d\n", resp.StatusCode)
+		return
+	}
+
+	log.Println("[reminders] Successfully processed reminders")
+}
+
 func main() {
 	// Configure logging to include date, time, and file line numbers.
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
@@ -3102,6 +3157,9 @@ func main() {
 
 	// Start the message handling goroutine.
 	go handleMessages()
+
+	// Start the reminder processing cron.
+	startReminderCron()
 
 	// Read the port from the environment variable, default to 8080 if not set.
 	port := os.Getenv("PORT")
