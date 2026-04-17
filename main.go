@@ -53,6 +53,7 @@ type Client struct {
 	mu           sync.Mutex        // Mutex to protect the channels map.
 	writeMu      sync.Mutex        // Mutex to protect WebSocket writes.
 	userID       string            // User identifier for the client
+	userName     string            // User display name (captured from presence updates)
 	rooms        map[string]string // roomID -> role mapping
 	roomChannels map[string]string // roomID -> pre-formatted channel name (e.g., "room-xyz")
 	lastPongTime time.Time         // Last time a pong was received from this client
@@ -2023,6 +2024,11 @@ func handleUserPresenceUpdate(client *Client, message Message) {
 		return
 	}
 
+	// Store userName on client for disconnect broadcasts
+	if presenceData.UserName != "" && client.userName == "" {
+		client.userName = presenceData.UserName
+	}
+
 	// Update presence in room state
 	roomMutex.Lock()
 	if room, exists := rooms[presenceData.RoomID]; exists {
@@ -2149,6 +2155,11 @@ func handleWebcamJoin(client *Client, message Message) {
 	if !client.isInRoom(webcamData.RoomID) {
 		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to join webcam session")
 		return
+	}
+
+	// Store userName on client for disconnect broadcasts
+	if webcamData.UserName != "" && client.userName == "" {
+		client.userName = webcamData.UserName
 	}
 
 	roomMutex.Lock()
@@ -3560,6 +3571,7 @@ func handleMessages() {
 					offlineData, _ := json.Marshal(map[string]interface{}{
 						"roomId":        roomID,
 						"userId":        client.userID,
+						"userName":      client.userName,
 						"presenceState": "offline",
 						"timestamp":     time.Now().Format(time.RFC3339),
 					})
