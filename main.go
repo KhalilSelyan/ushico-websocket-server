@@ -737,6 +737,9 @@ func leaveRoom(roomID, userID string) error {
 	if room.WebcamParticipants != nil {
 		delete(room.WebcamParticipants, userID)
 	}
+	if room.FaceModeParticipants != nil {
+		delete(room.FaceModeParticipants, userID)
+	}
 
 	// If session host leaves, clear session host (control reverts to owner)
 	if room.SessionHostID == userID {
