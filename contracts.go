@@ -325,6 +325,21 @@ type MovieRejectedData struct {
 	Reason     string `json:"reason"` // "host", "timeout", "majority_down"
 }
 
+// Stream mode types for FIFO streaming (first-to-stream gets exclusive access)
+
+type StreamModeChangedData struct {
+	RoomID string `json:"roomId"`
+	UserID string `json:"userId"`
+	Mode   string `json:"mode"` // "none", "screen", "camera", "file", "url"
+	Reason string `json:"reason,omitempty"` // "disconnect" when streamer leaves unexpectedly
+}
+
+type StreamStatusResponse struct {
+	RoomID            string `json:"roomId"`
+	CurrentStreamerID string `json:"currentStreamerId,omitempty"`
+	CurrentStreamMode string `json:"currentStreamMode,omitempty"`
+}
+
 // Session control types for temporary playback delegation
 
 type TransferSessionControlData struct {

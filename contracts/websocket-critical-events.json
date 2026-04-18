@@ -296,6 +296,25 @@
         "reason": "string?",
         "expiresAt": "string?"
       }
+    },
+    "stream_mode_changed": {
+      "channel": "room-{roomId}",
+      "description": "Broadcast when streaming state changes (FIFO: first to stream gets exclusive access)",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "mode": "none|screen|camera|file|url",
+        "reason": "string?"
+      }
+    },
+    "stream_status": {
+      "channel": "user-{userId}",
+      "description": "Response to get_stream_status request - returns current streaming state for late joiners",
+      "fields": {
+        "roomId": "string",
+        "currentStreamerId": "string?",
+        "currentStreamMode": "string?"
+      }
     }
   }
 }

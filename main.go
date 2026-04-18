@@ -103,6 +103,8 @@ type Room struct {
 	IsActive             bool                              `json:"isActive"`
 	CreatedAt            time.Time                         `json:"createdAt"`
 	CurrentVideo         SyncData                          `json:"currentVideo"`
+	CurrentStreamerID    string                            `json:"currentStreamerId,omitempty"`   // User currently streaming (empty = nobody streaming)
+	CurrentStreamMode    string                            `json:"currentStreamMode,omitempty"`   // Current stream mode (screen, camera, file, none)
 }
 
 // RoomData for room creation/management events.
@@ -745,6 +747,22 @@ func leaveRoom(roomID, userID string) error {
 	// If session host leaves, clear session host (control reverts to owner)
 	if room.SessionHostID == userID {
 		room.SessionHostID = ""
+	}
+
+	// If current streamer leaves, clear streaming state and notify room
+	if room.CurrentStreamerID == userID {
+		room.CurrentStreamerID = ""
+		room.CurrentStreamMode = ""
+		// Broadcast streamer_stopped to room (will be sent after mutex unlocks)
+		go func() {
+			streamerStoppedData := map[string]interface{}{
+				"roomId":   roomID,
+				"userId":   userID,
+				"mode":     "none",
+				"reason":   "disconnect",
+			}
+			broadcastToRoom(roomID, "stream_mode_changed", streamerStoppedData)
+		}()
 	}
 
 	// If no participants left, deactivate room
@@ -1617,13 +1635,25 @@ func handleSyncRoomState(client *Client, message Message) {
 	client.joinRoomAsClient(roomData.RoomID, clientRole)
 	client.subscribe(fmt.Sprintf("room-%s", roomData.RoomID))
 
+	// Get current streaming state for the confirmation
+	roomMutex.RLock()
+	currentStreamerID := ""
+	currentStreamMode := ""
+	if r, exists := rooms[roomData.RoomID]; exists {
+		currentStreamerID = r.CurrentStreamerID
+		currentStreamMode = r.CurrentStreamMode
+	}
+	roomMutex.RUnlock()
+
 	// Send confirmation back to client
 	confirmationData, _ := json.Marshal(map[string]interface{}{
-		"roomId":       roomData.RoomID,
-		"role":         clientRole,
-		"synced":       true,
-		"hostId":       roomData.HostID,
-		"participants": len(roomData.Participants),
+		"roomId":            roomData.RoomID,
+		"role":              clientRole,
+		"synced":            true,
+		"hostId":            roomData.HostID,
+		"participants":      len(roomData.Participants),
+		"currentStreamerId": currentStreamerID,
+		"currentStreamMode": currentStreamMode,
 	})
 
 	responseMessage := Message{
@@ -2229,12 +2259,12 @@ func handleGetRoomPresence(client *Client, message Message) {
 	}
 }
 
-// handleStreamModeChanged broadcasts when host switches between URL and WebRTC streaming modes
+// handleStreamModeChanged broadcasts when someone starts/stops streaming
 func handleStreamModeChanged(client *Client, message Message) {
 	var modeData struct {
 		RoomID    string `json:"roomId"`
 		UserID    string `json:"userId"`
-		Mode      string `json:"mode"` // "url" or "webrtc"
+		Mode      string `json:"mode"` // "none", "screen", "camera", "file", "url"
 		Timestamp string `json:"timestamp"`
 	}
 
@@ -2245,21 +2275,96 @@ func handleStreamModeChanged(client *Client, message Message) {
 	}
 
 	// Validate mode
-	if modeData.Mode != "url" && modeData.Mode != "webrtc" {
-		sendErrorResponse(client, "INVALID_MODE", "Mode must be 'url' or 'webrtc'")
+	validModes := map[string]bool{"none": true, "screen": true, "camera": true, "file": true, "url": true}
+	if !validModes[modeData.Mode] {
+		sendErrorResponse(client, "INVALID_MODE", "Mode must be 'none', 'screen', 'camera', 'file', or 'url'")
 		return
 	}
 
-	// Validate user is host in the room
-	if err := validateHostPermission(modeData.RoomID, client.userID, "change stream mode"); err != nil {
-		log.Printf("Permission denied for user %s: %v", client.userID, err)
-		sendErrorResponse(client, "PERMISSION_DENIED", "Only host can change stream mode")
+	// Validate user is in the room
+	if !client.isInRoom(modeData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to change stream mode")
 		return
 	}
 
-	// Broadcast to all room participants except sender
-	broadcastToRoomExceptSender(modeData.RoomID, client.userID, "stream_mode_changed", modeData)
+	roomMutex.Lock()
+	room, exists := rooms[modeData.RoomID]
+	if !exists {
+		roomMutex.Unlock()
+		sendErrorResponse(client, "ROOM_NOT_FOUND", "Room not found")
+		return
+	}
+
+	// Check if someone else is already streaming (FIFO lock)
+	if modeData.Mode != "none" && room.CurrentStreamerID != "" && room.CurrentStreamerID != client.userID {
+		roomMutex.Unlock()
+		sendErrorResponse(client, "STREAM_LOCKED", "Someone else is currently streaming")
+		return
+	}
+
+	// Update room streaming state
+	if modeData.Mode == "none" {
+		// Only the current streamer can stop streaming
+		if room.CurrentStreamerID == client.userID {
+			room.CurrentStreamerID = ""
+			room.CurrentStreamMode = ""
+		}
+	} else {
+		// Start streaming - lock to this user
+		room.CurrentStreamerID = client.userID
+		room.CurrentStreamMode = modeData.Mode
+	}
+	roomMutex.Unlock()
+
+	// Broadcast to all room participants (including sender for confirmation)
+	broadcastToRoom(modeData.RoomID, "stream_mode_changed", modeData)
 	log.Printf("Stream mode changed to %s in room %s by %s", modeData.Mode, modeData.RoomID, client.userID)
+}
+
+// handleGetStreamStatus returns current streaming state for late joiners
+func handleGetStreamStatus(client *Client, message Message) {
+	var requestData struct {
+		RoomID string `json:"roomId"`
+	}
+
+	if err := json.Unmarshal(message.Data, &requestData); err != nil {
+		log.Printf("Error parsing stream status request: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid stream status request format")
+		return
+	}
+
+	// Validate user is in the room
+	if !client.isInRoom(requestData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to get stream status")
+		return
+	}
+
+	roomMutex.RLock()
+	room, exists := rooms[requestData.RoomID]
+	var response StreamStatusResponse
+	if exists {
+		response = StreamStatusResponse{
+			RoomID:            requestData.RoomID,
+			CurrentStreamerID: room.CurrentStreamerID,
+			CurrentStreamMode: room.CurrentStreamMode,
+		}
+	} else {
+		response = StreamStatusResponse{
+			RoomID: requestData.RoomID,
+		}
+	}
+	roomMutex.RUnlock()
+
+	responseData, _ := json.Marshal(response)
+	responseMessage := Message{
+		Channel: fmt.Sprintf("user-%s", client.userID),
+		Event:   "stream_status",
+		Data:    responseData,
+	}
+
+	if err := client.safeWriteJSON(responseMessage); err != nil {
+		log.Printf("Error sending stream status: %v", err)
+	}
 }
 
 // handleWebcamJoin broadcasts when a user joins the webcam session
@@ -3531,6 +3636,8 @@ func handleClient(client *Client) {
 		// WEBRTC STREAMING
 		case "stream_mode_changed":
 			handleStreamModeChanged(client, message)
+		case "get_stream_status":
+			handleGetStreamStatus(client, message)
 		// PARTICIPANT WEBCAMS
 		case "webcam_join":
 			handleWebcamJoin(client, message)
