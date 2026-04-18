@@ -746,40 +746,6 @@ func handleRoomMessage(client *Client, message Message) {
 	broadcastToRoomExceptSender(roomID, client.userID, "room_message", messageData)
 }
 
-// broadcastToRoomExceptSender broadcasts a message to all room participants except the sender
-func broadcastToRoomExceptSender(roomID, senderID, eventType string, data interface{}) {
-	// Marshal the data
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		log.Printf("Error marshaling broadcast data: %v", err)
-		return
-	}
-
-	// Create the message
-	broadcastMessage := Message{
-		Channel: fmt.Sprintf("room-%s", roomID),
-		Event:   eventType,
-		Data:    jsonData,
-	}
-
-	// Use O(1) channel lookup to find subscribers
-	channel := fmt.Sprintf("room-%s", roomID)
-	channelMutex.RLock()
-	subscribers := channelSubs[channel]
-	for client := range subscribers {
-		if client.userID != senderID {
-			// Non-blocking send to client's buffered channel
-			select {
-			case client.send <- broadcastMessage:
-				// Message queued successfully
-			default:
-				log.Printf("Client %s send buffer full, dropping message", client.userID)
-			}
-		}
-	}
-	channelMutex.RUnlock()
-}
-
 func handleLegacySync(client *Client, message Message) {
 	// Legacy sync event
 
@@ -1183,38 +1149,6 @@ func handleParticipantUnbanned(client *Client, message Message) {
 	})
 }
 
-// broadcastToSpecificUser sends a message to a specific user if they're connected
-func broadcastToSpecificUser(userID, eventType string, data interface{}) {
-	// Marshal the data
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		log.Printf("Error marshaling user-specific broadcast data: %v", err)
-		return
-	}
-
-	// Create the message
-	userMessage := Message{
-		Channel: fmt.Sprintf("user-%s", userID),
-		Event:   eventType,
-		Data:    jsonData,
-	}
-
-	// Find and send to the specific user via their send channel
-	mutex.RLock()
-	for client := range clients {
-		if client.userID == userID {
-			select {
-			case client.send <- userMessage:
-				// Message queued successfully
-			default:
-				log.Printf("Client %s send buffer full, dropping user-specific message", userID)
-			}
-			break
-		}
-	}
-	mutex.RUnlock()
-}
-
 // handleUserTyping broadcasts typing indicator to room participants
 func handleUserTyping(client *Client, message Message) {
 	var typingData struct {
@@ -1300,38 +1234,6 @@ func handleVideoReaction(client *Client, message Message) {
 
 	// Broadcast reaction to all room participants including sender (they want to see their own reaction)
 	broadcastToRoom(reactionData.RoomID, "video_reaction", reactionData)
-}
-
-// broadcastToRoom broadcasts a message to all room participants including sender
-func broadcastToRoom(roomID, eventType string, data interface{}) {
-	// Marshal the data
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		log.Printf("Error marshaling room broadcast data: %v", err)
-		return
-	}
-
-	// Create the message
-	broadcastMessage := Message{
-		Channel: fmt.Sprintf("room-%s", roomID),
-		Event:   eventType,
-		Data:    jsonData,
-	}
-
-	// Use O(1) channel lookup to find subscribers
-	channel := fmt.Sprintf("room-%s", roomID)
-	channelMutex.RLock()
-	subscribers := channelSubs[channel]
-	for client := range subscribers {
-		// Non-blocking send to client's buffered channel
-		select {
-		case client.send <- broadcastMessage:
-			// Message queued successfully
-		default:
-			log.Printf("Client %s send buffer full, dropping message", client.userID)
-		}
-	}
-	channelMutex.RUnlock()
 }
 
 // handleRoomAnnouncement broadcasts system messages to room participants
