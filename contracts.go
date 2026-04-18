@@ -4,6 +4,38 @@ import "encoding/json"
 
 const WebSocketContractVersion = 2
 
+// Message represents the structure of messages sent over WebSocket.
+type Message struct {
+	Channel string          `json:"channel"`
+	Event   string          `json:"event"`
+	Data    json.RawMessage `json:"data"`
+}
+
+// SyncData represents the synchronization data for video playback.
+type SyncData struct {
+	Timestamp float64 `json:"timestamp"`
+	URL       string  `json:"url"`
+	RoomID    string  `json:"roomId"`
+	State     string  `json:"state"`
+	VideoID   string  `json:"videoId"`
+	SentAt    int64   `json:"sentAt"`
+	Reason    string  `json:"reason"`
+}
+
+// ErrorResponse for client errors.
+type ErrorResponse struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
+	Code    string `json:"code"`
+}
+
+// BinaryBroadcast holds a binary message to broadcast to a room
+type BinaryBroadcast struct {
+	RoomID   string
+	SenderID string
+	Data     []byte
+}
+
 type RoomVideoStateResponse struct {
 	RoomID string    `json:"roomId"`
 	Sync   *SyncData `json:"sync"`
