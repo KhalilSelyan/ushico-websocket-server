@@ -1798,6 +1798,127 @@ func handleParticipantKicked(client *Client, message Message) {
 	}
 }
 
+// handleLockChanged broadcasts room lock state changes to all participants
+func handleLockChanged(client *Client, message Message) {
+	var data LockChangedData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing lock changed data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid lock changed data format")
+		return
+	}
+
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "You are not in this room")
+		return
+	}
+
+	logRealtime("lock_changed", map[string]interface{}{
+		"roomId":    data.RoomID,
+		"userId":    client.userID,
+		"lockState": data.LockState,
+	})
+
+	broadcastToRoom(data.RoomID, "lock_changed", data)
+}
+
+// handleParticipantBanned removes user from room and notifies all participants
+func handleParticipantBanned(client *Client, message Message) {
+	var data BanUserData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing ban data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid ban data format")
+		return
+	}
+
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "You are not in this room")
+		return
+	}
+
+	// Remove banned user from room state
+	if err := leaveRoom(data.RoomID, data.TargetUserID); err != nil {
+		log.Printf("Error removing banned user from room: %v", err)
+	}
+
+	// Get room name for the banned user notification
+	roomMutex.RLock()
+	roomName := ""
+	if room, exists := rooms[data.RoomID]; exists {
+		roomName = room.Name
+	}
+	roomMutex.RUnlock()
+
+	// Calculate expiration for timed bans
+	expiresAt := ""
+	if data.BanType == "timed" && data.DurationMinutes > 0 {
+		expiresAt = time.Now().Add(time.Duration(data.DurationMinutes) * time.Minute).Format(time.RFC3339)
+	}
+
+	// Notify the banned user
+	youBanned := YouBannedData{
+		RoomID:    data.RoomID,
+		RoomName:  roomName,
+		BanType:   data.BanType,
+		Reason:    data.Reason,
+		ExpiresAt: expiresAt,
+	}
+	broadcastToSpecificUser(data.TargetUserID, "you_banned", youBanned)
+
+	// Notify other participants
+	bannedNotification := ParticipantBannedData{
+		RoomID:   data.RoomID,
+		UserID:   data.TargetUserID,
+		UserName: data.TargetUserName,
+		BanType:  data.BanType,
+		Reason:   data.Reason,
+		BannedBy: client.userID,
+	}
+	broadcastToRoom(data.RoomID, "participant_banned", bannedNotification)
+
+	// Also send participant_left so UI updates
+	leftNotification := map[string]interface{}{
+		"userId":   data.TargetUserID,
+		"userName": data.TargetUserName,
+		"reason":   "banned",
+	}
+	broadcastToRoom(data.RoomID, "participant_left", leftNotification)
+
+	logRealtime("participant_banned", map[string]interface{}{
+		"roomId":       data.RoomID,
+		"userId":       client.userID,
+		"targetUserId": data.TargetUserID,
+		"banType":      data.BanType,
+	})
+}
+
+// handleParticipantUnbanned notifies participants that a ban was lifted
+func handleParticipantUnbanned(client *Client, message Message) {
+	var data UnbanUserData
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		log.Printf("Error parsing unban data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid unban data format")
+		return
+	}
+
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "You are not in this room")
+		return
+	}
+
+	unbannedNotification := ParticipantUnbannedData{
+		RoomID:     data.RoomID,
+		UserID:     data.TargetUserID,
+		UnbannedBy: client.userID,
+	}
+	broadcastToRoom(data.RoomID, "participant_unbanned", unbannedNotification)
+
+	logRealtime("participant_unbanned", map[string]interface{}{
+		"roomId":       data.RoomID,
+		"userId":       client.userID,
+		"targetUserId": data.TargetUserID,
+	})
+}
+
 // broadcastToSpecificUser sends a message to a specific user if they're connected
 func broadcastToSpecificUser(userID, eventType string, data interface{}) {
 	// Marshal the data
@@ -3470,6 +3591,13 @@ func handleClient(client *Client) {
 			handleChatUnmute(client, message)
 		case "delete_message":
 			handleDeleteMessage(client, message)
+		// ROOM LOCK & BAN
+		case "lock_changed":
+			handleLockChanged(client, message)
+		case "participant_banned":
+			handleParticipantBanned(client, message)
+		case "participant_unbanned":
+			handleParticipantUnbanned(client, message)
 		// APPLICATION-LEVEL HEARTBEAT
 		// Browser WebSocket API can't send protocol-level pings,
 		// so clients send JSON ping events to detect zombie connections.

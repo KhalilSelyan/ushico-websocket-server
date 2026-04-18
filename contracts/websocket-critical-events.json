@@ -259,6 +259,43 @@
         "proposalId": "string",
         "reason": "host|timeout|majority_down"
       }
+    },
+    "lock_changed": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "lockState": "open|invite-only|locked",
+        "changedBy": "string"
+      }
+    },
+    "participant_banned": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "userName": "string",
+        "banType": "session|timed|permanent",
+        "reason": "string?",
+        "bannedBy": "string"
+      }
+    },
+    "participant_unbanned": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "unbannedBy": "string"
+      }
+    },
+    "you_banned": {
+      "channel": "user-{userId}",
+      "fields": {
+        "roomId": "string",
+        "roomName": "string",
+        "banType": "session|timed|permanent",
+        "reason": "string?",
+        "expiresAt": "string?"
+      }
     }
   }
 }

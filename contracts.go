@@ -343,3 +343,50 @@ type SessionControlChangedData struct {
 	SessionHostName string `json:"sessionHostName"` // "" when owner has control
 	OwnerID         string `json:"ownerId"`         // permanent room owner
 }
+
+// Room lock types for access control
+
+type LockChangedData struct {
+	RoomID    string `json:"roomId"`
+	LockState string `json:"lockState"` // "open", "invite-only", "locked"
+	ChangedBy string `json:"changedBy"`
+}
+
+// Ban types for user moderation
+
+type BanUserData struct {
+	RoomID          string `json:"roomId"`
+	TargetUserID    string `json:"targetUserId"`
+	TargetUserName  string `json:"targetUserName"`
+	BanType         string `json:"banType"` // "session", "timed", "permanent"
+	DurationMinutes int    `json:"durationMinutes,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+}
+
+type UnbanUserData struct {
+	RoomID       string `json:"roomId"`
+	TargetUserID string `json:"targetUserId"`
+}
+
+type ParticipantBannedData struct {
+	RoomID   string `json:"roomId"`
+	UserID   string `json:"userId"`
+	UserName string `json:"userName"`
+	BanType  string `json:"banType"`
+	Reason   string `json:"reason,omitempty"`
+	BannedBy string `json:"bannedBy"`
+}
+
+type ParticipantUnbannedData struct {
+	RoomID     string `json:"roomId"`
+	UserID     string `json:"userId"`
+	UnbannedBy string `json:"unbannedBy"`
+}
+
+type YouBannedData struct {
+	RoomID    string `json:"roomId"`
+	RoomName  string `json:"roomName"`
+	BanType   string `json:"banType"`
+	Reason    string `json:"reason,omitempty"`
+	ExpiresAt string `json:"expiresAt,omitempty"`
+}
