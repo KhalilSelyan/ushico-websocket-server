@@ -441,3 +441,39 @@ func handleWebcamHubChange(client *Client, message Message) {
 	broadcastToRoom(webcamData.RoomID, "webcam_hub_change", webcamData)
 	log.Printf("Webcam hub changed in room %s to user %v", webcamData.RoomID, webcamData.NewHubUserId)
 }
+
+// handleVideoReaction broadcasts emoji reactions with timestamp sync
+func handleVideoReaction(client *Client, message Message) {
+	var reactionData struct {
+		RoomID         string  `json:"roomId"`
+		UserID         string  `json:"userId"`
+		UserName       string  `json:"userName"`
+		Emoji          string  `json:"emoji"`
+		VideoTimestamp float64 `json:"videoTimestamp"`
+		Timestamp      string  `json:"timestamp"`
+		ReactionID     string  `json:"reactionId"`
+	}
+
+	if err := json.Unmarshal(message.Data, &reactionData); err != nil {
+		log.Printf("Error parsing reaction data: %v", err)
+		sendErrorResponse(client, "INVALID_DATA", "Invalid reaction data format")
+		return
+	}
+
+	if !client.isInRoom(reactionData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to send reactions")
+		return
+	}
+
+	validEmojis := map[string]bool{
+		"😂": true, "❤️": true, "😮": true, "👏": true, "😢": true,
+		"🔥": true, "💯": true, "👍": true, "👎": true, "😍": true,
+	}
+
+	if !validEmojis[reactionData.Emoji] {
+		sendErrorResponse(client, "INVALID_EMOJI", "Invalid emoji for reactions")
+		return
+	}
+
+	broadcastToRoom(reactionData.RoomID, "video_reaction", reactionData)
+}
