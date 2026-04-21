@@ -258,6 +258,7 @@ func getAnimationIndex(anim string) byte {
 		"idle": 0, "walk": 1, "sprint": 2, "sit": 3, "jump": 4,
 		"fall": 5, "crouch": 6, "die": 7, "emote-yes": 8, "emote-no": 9,
 		"interact-right": 10, "interact-left": 11, "attack-kick-right": 12,
+		"slap": 13,
 	}
 	if idx, ok := animations[anim]; ok {
 		return idx
@@ -285,7 +286,7 @@ func binaryAvatarToJSON(data []byte) json.RawMessage {
 	animIndex := data[offset]
 	offset++
 
-	animations := []string{"idle", "walk", "sprint", "sit", "jump", "fall", "crouch", "die", "emote-yes", "emote-no", "interact-right", "interact-left", "attack-kick-right"}
+	animations := []string{"idle", "walk", "sprint", "sit", "jump", "fall", "crouch", "die", "emote-yes", "emote-no", "interact-right", "interact-left", "attack-kick-right", "slap"}
 	anim := "idle"
 	if int(animIndex) < len(animations) {
 		anim = animations[animIndex]
