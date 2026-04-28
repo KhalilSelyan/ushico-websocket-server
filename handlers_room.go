@@ -382,20 +382,23 @@ func handleSyncRoomState(client *Client, message Message) {
 	roomMutex.RLock()
 	currentStreamerID := ""
 	currentStreamMode := ""
+	currentStreamerPeerID := ""
 	if r, exists := rooms[roomData.RoomID]; exists {
 		currentStreamerID = r.CurrentStreamerID
 		currentStreamMode = r.CurrentStreamMode
+		currentStreamerPeerID = r.CurrentStreamerPeerID
 	}
 	roomMutex.RUnlock()
 
 	confirmationData, _ := json.Marshal(map[string]interface{}{
-		"roomId":            roomData.RoomID,
-		"role":              clientRole,
-		"synced":            true,
-		"hostId":            roomData.HostID,
-		"participants":      len(roomData.Participants),
-		"currentStreamerId": currentStreamerID,
-		"currentStreamMode": currentStreamMode,
+		"roomId":                roomData.RoomID,
+		"role":                  clientRole,
+		"synced":                true,
+		"hostId":                roomData.HostID,
+		"participants":          len(roomData.Participants),
+		"currentStreamerId":     currentStreamerID,
+		"currentStreamMode":     currentStreamMode,
+		"currentStreamerPeerId": currentStreamerPeerID,
 	})
 
 	responseMessage := Message{

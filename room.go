@@ -17,23 +17,24 @@ type MuteInfo struct {
 
 // Room represents a watch party room state (in-memory only).
 type Room struct {
-	ID                   string                            `json:"id"`
-	HostID               string                            `json:"hostId"`
-	SessionHostID        string                            `json:"sessionHostId,omitempty"` // Temporary playback controller (falls back to HostID if empty)
-	Name                 string                            `json:"name"`
-	Participants         map[string]string                 `json:"participants"`  // userID -> role mapping
-	Presence             map[string]string                 `json:"presence"`      // userID -> presence state (active, away, offline)
-	CinemaAvatars        map[string]json.RawMessage        `json:"cinemaAvatars"` // userID -> last avatar state
-	WebcamParticipants   map[string]WebcamStateParticipant `json:"webcamParticipants"`
-	FaceModeParticipants map[string]bool                   `json:"faceModeParticipants"` // userID -> face mode enabled
-	Queue                []QueueItem                       `json:"queue"`                // Video queue
-	MutedUsers           map[string]MuteInfo               `json:"mutedUsers"`           // userID -> mute info
-	ActiveProposal       *MovieProposal                    `json:"activeProposal"`       // Active movie proposal (nil if none)
-	IsActive             bool                              `json:"isActive"`
-	CreatedAt            time.Time                         `json:"createdAt"`
-	CurrentVideo         SyncData                          `json:"currentVideo"`
-	CurrentStreamerID    string                            `json:"currentStreamerId,omitempty"` // User currently streaming (empty = nobody streaming)
-	CurrentStreamMode    string                            `json:"currentStreamMode,omitempty"` // Current stream mode (screen, camera, file, none)
+	ID                    string                            `json:"id"`
+	HostID                string                            `json:"hostId"`
+	SessionHostID         string                            `json:"sessionHostId,omitempty"` // Temporary playback controller (falls back to HostID if empty)
+	Name                  string                            `json:"name"`
+	Participants          map[string]string                 `json:"participants"`  // userID -> role mapping
+	Presence              map[string]string                 `json:"presence"`      // userID -> presence state (active, away, offline)
+	CinemaAvatars         map[string]json.RawMessage        `json:"cinemaAvatars"` // userID -> last avatar state
+	WebcamParticipants    map[string]WebcamStateParticipant `json:"webcamParticipants"`
+	FaceModeParticipants  map[string]bool                   `json:"faceModeParticipants"` // userID -> face mode enabled
+	Queue                 []QueueItem                       `json:"queue"`                // Video queue
+	MutedUsers            map[string]MuteInfo               `json:"mutedUsers"`           // userID -> mute info
+	ActiveProposal        *MovieProposal                    `json:"activeProposal"`       // Active movie proposal (nil if none)
+	IsActive              bool                              `json:"isActive"`
+	CreatedAt             time.Time                         `json:"createdAt"`
+	CurrentVideo          SyncData                          `json:"currentVideo"`
+	CurrentStreamerID     string                            `json:"currentStreamerId,omitempty"`     // User currently streaming (empty = nobody streaming)
+	CurrentStreamMode     string                            `json:"currentStreamMode,omitempty"`     // Current stream mode (screen, camera, file, none)
+	CurrentStreamerPeerID string                            `json:"currentStreamerPeerId,omitempty"` // PeerJS id viewers connect to for the current stream
 }
 
 // RoomData for room creation/management events.
@@ -152,6 +153,7 @@ func leaveRoom(roomID, userID string) error {
 	if room.CurrentStreamerID == userID {
 		room.CurrentStreamerID = ""
 		room.CurrentStreamMode = ""
+		room.CurrentStreamerPeerID = ""
 		// Broadcast streamer_stopped to room (will be sent after mutex unlocks)
 		go func() {
 			streamerStoppedData := map[string]interface{}{

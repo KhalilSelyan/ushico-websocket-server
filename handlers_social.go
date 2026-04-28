@@ -172,6 +172,7 @@ func handleStreamModeChanged(client *Client, message Message) {
 		RoomID    string `json:"roomId"`
 		UserID    string `json:"userId"`
 		Mode      string `json:"mode"` // "none", "screen", "camera", "file", "url"
+		PeerID    string `json:"peerId,omitempty"`
 		Timestamp string `json:"timestamp"`
 	}
 
@@ -215,11 +216,13 @@ func handleStreamModeChanged(client *Client, message Message) {
 		if room.CurrentStreamerID == client.userID {
 			room.CurrentStreamerID = ""
 			room.CurrentStreamMode = ""
+			room.CurrentStreamerPeerID = ""
 		}
 	} else {
 		// Start streaming - lock to this user
 		room.CurrentStreamerID = client.userID
 		room.CurrentStreamMode = modeData.Mode
+		room.CurrentStreamerPeerID = modeData.PeerID
 	}
 	roomMutex.Unlock()
 
@@ -251,9 +254,10 @@ func handleGetStreamStatus(client *Client, message Message) {
 	var response StreamStatusResponse
 	if exists {
 		response = StreamStatusResponse{
-			RoomID:            requestData.RoomID,
-			CurrentStreamerID: room.CurrentStreamerID,
-			CurrentStreamMode: room.CurrentStreamMode,
+			RoomID:                requestData.RoomID,
+			CurrentStreamerID:     room.CurrentStreamerID,
+			CurrentStreamMode:     room.CurrentStreamMode,
+			CurrentStreamerPeerID: room.CurrentStreamerPeerID,
 		}
 	} else {
 		response = StreamStatusResponse{

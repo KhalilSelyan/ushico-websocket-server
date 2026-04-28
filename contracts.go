@@ -286,15 +286,15 @@ type MovieProposalMovie struct {
 }
 
 type MovieProposal struct {
-	ID        string                 `json:"id"`
-	RoomID    string                 `json:"roomId"`
-	Movie     MovieProposalMovie     `json:"movie"`
-	Proposer  MovieProposalUser      `json:"proposer"`
-	VotesUp   []MovieProposalUser    `json:"votesUp"`
-	VotesDown []MovieProposalUser    `json:"votesDown"`
-	Status    string                 `json:"status"` // pending, approved, rejected
-	ExpiresAt string                 `json:"expiresAt"`
-	CreatedAt string                 `json:"createdAt"`
+	ID        string              `json:"id"`
+	RoomID    string              `json:"roomId"`
+	Movie     MovieProposalMovie  `json:"movie"`
+	Proposer  MovieProposalUser   `json:"proposer"`
+	VotesUp   []MovieProposalUser `json:"votesUp"`
+	VotesDown []MovieProposalUser `json:"votesDown"`
+	Status    string              `json:"status"` // pending, approved, rejected
+	ExpiresAt string              `json:"expiresAt"`
+	CreatedAt string              `json:"createdAt"`
 }
 
 // Client → Server
@@ -363,13 +363,15 @@ type StreamModeChangedData struct {
 	RoomID string `json:"roomId"`
 	UserID string `json:"userId"`
 	Mode   string `json:"mode"` // "none", "screen", "camera", "file", "url"
+	PeerID string `json:"peerId,omitempty"`
 	Reason string `json:"reason,omitempty"` // "disconnect" when streamer leaves unexpectedly
 }
 
 type StreamStatusResponse struct {
-	RoomID            string `json:"roomId"`
-	CurrentStreamerID string `json:"currentStreamerId,omitempty"`
-	CurrentStreamMode string `json:"currentStreamMode,omitempty"`
+	RoomID                string `json:"roomId"`
+	CurrentStreamerID     string `json:"currentStreamerId,omitempty"`
+	CurrentStreamMode     string `json:"currentStreamMode,omitempty"`
+	CurrentStreamerPeerID string `json:"currentStreamerPeerId,omitempty"`
 }
 
 // Session control types for temporary playback delegation
