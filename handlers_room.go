@@ -355,17 +355,28 @@ func handleSyncRoomState(client *Client, message Message) {
 	}
 
 	roomMutex.Lock()
+	existingStreamerID := ""
+	existingStreamMode := ""
+	existingStreamerPeerID := ""
+	if existingRoom, exists := rooms[roomData.RoomID]; exists {
+		existingStreamerID = existingRoom.CurrentStreamerID
+		existingStreamMode = existingRoom.CurrentStreamMode
+		existingStreamerPeerID = existingRoom.CurrentStreamerPeerID
+	}
 	room := &Room{
-		ID:                   roomData.RoomID,
-		HostID:               roomData.HostID,
-		Name:                 roomData.RoomName,
-		Participants:         make(map[string]string),
-		Presence:             make(map[string]string),
-		WebcamParticipants:   make(map[string]WebcamStateParticipant),
-		FaceModeParticipants: make(map[string]bool),
-		IsActive:             true,
-		CreatedAt:            time.Now(),
-		CurrentVideo:         SyncData{},
+		ID:                    roomData.RoomID,
+		HostID:                roomData.HostID,
+		Name:                  roomData.RoomName,
+		Participants:          make(map[string]string),
+		Presence:              make(map[string]string),
+		WebcamParticipants:    make(map[string]WebcamStateParticipant),
+		FaceModeParticipants:  make(map[string]bool),
+		IsActive:              true,
+		CreatedAt:             time.Now(),
+		CurrentVideo:          SyncData{},
+		CurrentStreamerID:     existingStreamerID,
+		CurrentStreamMode:     existingStreamMode,
+		CurrentStreamerPeerID: existingStreamerPeerID,
 	}
 
 	for _, p := range roomData.Participants {

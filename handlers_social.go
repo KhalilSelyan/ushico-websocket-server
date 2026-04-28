@@ -219,9 +219,11 @@ func handleStreamModeChanged(client *Client, message Message) {
 	// Update room streaming state
 	if modeData.Mode == "none" {
 		// Only the current streamer can stop streaming
-		if room.CurrentStreamerID == client.userID {
-			clearRoomStreamer(room)
+		if room.CurrentStreamerID != client.userID {
+			roomMutex.Unlock()
+			return
 		}
+		clearRoomStreamer(room)
 	} else {
 		// Start streaming - lock to this user
 		room.CurrentStreamerID = client.userID

@@ -137,6 +137,91 @@ func TestStoppingStreamClearsPeerIDAndAddsReason(t *testing.T) {
 	}
 }
 
+func TestNonStreamerCannotBroadcastStop(t *testing.T) {
+	resetStreamTestGlobals()
+	room := &Room{
+		ID:                    "room-1",
+		Participants:          map[string]string{"streamer": "viewer", "other": "viewer"},
+		Presence:              map[string]string{},
+		IsActive:              true,
+		CurrentStreamerID:     "streamer",
+		CurrentStreamMode:     "screen",
+		CurrentStreamerPeerID: "peer-streamer",
+	}
+	roomMutex.Lock()
+	rooms[room.ID] = room
+	roomMutex.Unlock()
+
+	client := &Client{
+		userID:       "other",
+		rooms:        map[string]string{"room-1": "viewer"},
+		channels:     map[string]bool{},
+		roomChannels: map[string]string{"room-1": "room-room-1"},
+		send:         make(chan Message, 1),
+	}
+	channelMutex.Lock()
+	channelSubs["room-room-1"] = map[*Client]bool{client: true}
+	channelMutex.Unlock()
+
+	payload, _ := json.Marshal(map[string]string{"roomId": "room-1", "mode": "none"})
+	handleStreamModeChanged(client, Message{Data: payload})
+
+	roomMutex.RLock()
+	if room.CurrentStreamerID != "streamer" || room.CurrentStreamMode != "screen" || room.CurrentStreamerPeerID != "peer-streamer" {
+		t.Fatalf("stream state changed unexpectedly: id=%q mode=%q peer=%q", room.CurrentStreamerID, room.CurrentStreamMode, room.CurrentStreamerPeerID)
+	}
+	roomMutex.RUnlock()
+
+	select {
+	case msg := <-client.send:
+		t.Fatalf("unexpected broadcast: %s", msg.Event)
+	default:
+	}
+}
+
+func TestSyncRoomStatePreservesActiveStreamer(t *testing.T) {
+	resetStreamTestGlobals()
+	room := &Room{
+		ID:                    "room-1",
+		HostID:                "host",
+		Participants:          map[string]string{"host": "host"},
+		Presence:              map[string]string{},
+		IsActive:              true,
+		CurrentStreamerID:     "streamer",
+		CurrentStreamMode:     "camera",
+		CurrentStreamerPeerID: "peer-streamer",
+	}
+	roomMutex.Lock()
+	rooms[room.ID] = room
+	roomMutex.Unlock()
+
+	client := &Client{
+		userID:       "host",
+		rooms:        map[string]string{},
+		channels:     map[string]bool{},
+		roomChannels: map[string]string{},
+		send:         make(chan Message, 1),
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"roomId":   "room-1",
+		"hostId":   "host",
+		"roomName": "Room",
+		"participants": []map[string]string{
+			{"userId": "host", "role": "host"},
+			{"userId": "streamer", "role": "viewer"},
+		},
+	})
+	handleSyncRoomState(client, Message{Data: payload})
+
+	roomMutex.RLock()
+	preserved := rooms["room-1"].CurrentStreamerID == "streamer" && rooms["room-1"].CurrentStreamMode == "camera" && rooms["room-1"].CurrentStreamerPeerID == "peer-streamer"
+	roomMutex.RUnlock()
+	if !preserved {
+		t.Fatal("sync_room_state did not preserve active streamer")
+	}
+}
+
 func TestDisconnectCleanupIsIdempotent(t *testing.T) {
 	resetStreamTestGlobals()
 	client := &Client{

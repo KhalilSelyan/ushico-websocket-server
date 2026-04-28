@@ -118,6 +118,9 @@ func (c *Client) writePump() {
 
 // safeWriteJSON safely writes JSON to the WebSocket connection with proper locking.
 func (c *Client) safeWriteJSON(v interface{}) error {
+	if c.conn == nil {
+		return nil
+	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	return c.conn.WriteJSON(v)
