@@ -93,7 +93,8 @@ func handleUserPresenceUpdate(client *Client, message Message) {
 		if room.Presence == nil {
 			room.Presence = make(map[string]string)
 		}
-		room.Presence[presenceData.UserID] = presenceData.PresenceState
+		presenceData.UserID = client.userID
+		room.Presence[client.userID] = presenceData.PresenceState
 	}
 	roomMutex.Unlock()
 
@@ -120,7 +121,7 @@ func handleGetRoomPresence(client *Client, message Message) {
 	}
 
 	// Get current presence state - validate against actually connected users
-	roomMutex.RLock()
+	roomMutex.Lock()
 	var participants []RoomPresenceParticipant
 	if room, exists := rooms[requestData.RoomID]; exists {
 		participants = make([]RoomPresenceParticipant, 0, len(room.Presence))
@@ -150,7 +151,7 @@ func handleGetRoomPresence(client *Client, message Message) {
 			})
 		}
 	}
-	roomMutex.RUnlock()
+	roomMutex.Unlock()
 
 	// Send presence data back to requesting client
 	responseData, _ := json.Marshal(RoomPresenceResponse{RoomID: requestData.RoomID, Participants: participants})
@@ -314,8 +315,9 @@ func handleWebcamJoin(client *Client, message Message) {
 		if room.WebcamParticipants == nil {
 			room.WebcamParticipants = make(map[string]WebcamStateParticipant)
 		}
-		room.WebcamParticipants[webcamData.UserID] = WebcamStateParticipant{
-			UserID:       webcamData.UserID,
+		webcamData.UserID = client.userID
+		room.WebcamParticipants[client.userID] = WebcamStateParticipant{
+			UserID:       client.userID,
 			UserName:     webcamData.UserName,
 			UserImage:    webcamData.UserImage,
 			VideoEnabled: webcamData.VideoEnabled,
@@ -325,7 +327,7 @@ func handleWebcamJoin(client *Client, message Message) {
 	roomMutex.Unlock()
 	logRealtime("webcam_join", map[string]interface{}{
 		"roomId":       webcamData.RoomID,
-		"userId":       webcamData.UserID,
+		"userId":       client.userID,
 		"audioEnabled": webcamData.AudioEnabled,
 		"videoEnabled": webcamData.VideoEnabled,
 	})
@@ -345,19 +347,24 @@ func handleWebcamLeave(client *Client, message Message) {
 		return
 	}
 
+	if !client.isInRoom(webcamData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to leave webcam")
+		return
+	}
+	webcamData.UserID = client.userID
 	roomMutex.Lock()
 	if room, exists := rooms[webcamData.RoomID]; exists && room.WebcamParticipants != nil {
-		delete(room.WebcamParticipants, webcamData.UserID)
+		delete(room.WebcamParticipants, client.userID)
 	}
 	roomMutex.Unlock()
 	logRealtime("webcam_leave", map[string]interface{}{
 		"roomId": webcamData.RoomID,
-		"userId": webcamData.UserID,
+		"userId": client.userID,
 	})
 
 	// Broadcast to all room participants except sender
 	broadcastToRoomExceptSender(webcamData.RoomID, client.userID, "webcam_leave", webcamData)
-	log.Printf("User %s left webcam in room %s", webcamData.UserID, webcamData.RoomID)
+	log.Printf("User %s left webcam in room %s", client.userID, webcamData.RoomID)
 }
 
 // handleWebcamToggle broadcasts when a user toggles audio/video
@@ -381,21 +388,22 @@ func handleWebcamToggle(client *Client, message Message) {
 		return
 	}
 
+	webcamData.UserID = client.userID
 	roomMutex.Lock()
 	if room, exists := rooms[webcamData.RoomID]; exists && room.WebcamParticipants != nil {
-		participant := room.WebcamParticipants[webcamData.UserID]
+		participant := room.WebcamParticipants[client.userID]
 		if webcamData.Type == "audio" {
 			participant.AudioEnabled = webcamData.Enabled
 		} else {
 			participant.VideoEnabled = webcamData.Enabled
 		}
-		participant.UserID = webcamData.UserID
-		room.WebcamParticipants[webcamData.UserID] = participant
+		participant.UserID = client.userID
+		room.WebcamParticipants[client.userID] = participant
 	}
 	roomMutex.Unlock()
 	logRealtime("webcam_toggle", map[string]interface{}{
 		"roomId":  webcamData.RoomID,
-		"userId":  webcamData.UserID,
+		"userId":  client.userID,
 		"type":    webcamData.Type,
 		"enabled": webcamData.Enabled,
 	})

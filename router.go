@@ -44,6 +44,21 @@ func validateHostPermission(roomID, userID string, action string) error {
 	return nil
 }
 
+func validateRoomMembership(client *Client, roomID string) error {
+	if !client.isInRoom(roomID) {
+		return fmt.Errorf("permission denied: join room before sending room events")
+	}
+	return nil
+}
+
+func validateRoomModerationPermission(roomID, userID string, action string) error {
+	role := getRoomParticipantRole(roomID, userID)
+	if role != "host" && role != "co-host" && role != "mod" {
+		return fmt.Errorf("permission denied: cannot %s", action)
+	}
+	return nil
+}
+
 // handleBinaryMessage processes incoming binary WebSocket messages
 func handleBinaryMessage(client *Client, data []byte) {
 	if len(data) < 1 {
@@ -56,6 +71,10 @@ func handleBinaryMessage(client *Client, data []byte) {
 		roomID, err := decodeBinaryAvatarUpdate(data)
 		if err != nil {
 			log.Printf("Error decoding binary avatar update: %v", err)
+			return
+		}
+		if err := validateRoomMembership(client, roomID); err != nil {
+			sendErrorResponse(client, "permission_denied", err.Error())
 			return
 		}
 
@@ -81,6 +100,14 @@ func handleBinaryMessage(client *Client, data []byte) {
 			log.Printf("Error decoding binary host sync: %v", err)
 			return
 		}
+		if err := validateRoomMembership(client, roomID); err != nil {
+			sendErrorResponse(client, "permission_denied", err.Error())
+			return
+		}
+		if err := validateHostPermission(roomID, client.userID, "sync playback"); err != nil {
+			sendErrorResponse(client, "permission_denied", err.Error())
+			return
+		}
 
 		// Store current video state (decode to JSON)
 		roomMutex.Lock()
@@ -101,6 +128,10 @@ func handleBinaryMessage(client *Client, data []byte) {
 			log.Printf("Error decoding binary cinema animation: %v", err)
 			return
 		}
+		if err := validateRoomMembership(client, roomID); err != nil {
+			sendErrorResponse(client, "permission_denied", err.Error())
+			return
+		}
 		binaryBroadcast <- BinaryBroadcast{RoomID: roomID, SenderID: client.userID, Data: data}
 		logRealtime("cinema_animation_binary", map[string]interface{}{"roomId": roomID, "userId": client.userID, "bytes": len(data)})
 
@@ -108,6 +139,10 @@ func handleBinaryMessage(client *Client, data []byte) {
 		roomID, err := decodeBinaryVideoReaction(data)
 		if err != nil {
 			log.Printf("Error decoding binary video reaction: %v", err)
+			return
+		}
+		if err := validateRoomMembership(client, roomID); err != nil {
+			sendErrorResponse(client, "permission_denied", err.Error())
 			return
 		}
 		binaryBroadcast <- BinaryBroadcast{RoomID: roomID, SenderID: client.userID, Data: data}
@@ -132,7 +167,7 @@ func handleClient(client *Client) {
 
 	// Setup pong handler to reset read deadline on receiving pong messages.
 	client.conn.SetPongHandler(func(string) error {
-		client.lastPongTime = time.Now()
+		client.setLastPong(time.Now())
 		client.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil
 	})
@@ -177,10 +212,8 @@ func handleClient(client *Client) {
 // routeMessage dispatches a message to the appropriate handler based on event type.
 func routeMessage(client *Client, message Message) {
 	switch message.Event {
-	case "subscribe":
-		client.subscribe(message.Channel)
-	case "unsubscribe":
-		client.unsubscribe(message.Channel)
+	case "subscribe", "unsubscribe":
+		sendErrorResponse(client, "unsupported_event", "manual channel subscriptions are disabled")
 	// ROOM EVENTS
 	case "create_room":
 		handleCreateRoom(client, message)

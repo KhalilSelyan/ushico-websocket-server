@@ -186,3 +186,15 @@ func (c *Client) getRoleInRoom(roomID string) string {
 	defer c.mu.Unlock()
 	return c.rooms[roomID]
 }
+
+func (c *Client) setLastPong(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastPongTime = t
+}
+
+func (c *Client) getLastPong() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastPongTime
+}

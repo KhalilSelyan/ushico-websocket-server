@@ -99,6 +99,10 @@ func handleRoomDeactivated(client *Client, message Message) {
 		sendErrorResponse(client, "INVALID_DATA", "Invalid room deactivation data format")
 		return
 	}
+	if err := validateHostPermission(deactivationData.RoomID, client.userID, "deactivate room"); err != nil {
+		sendErrorResponse(client, "permission_denied", err.Error())
+		return
+	}
 
 	participants := getRoomParticipants(deactivationData.RoomID)
 
@@ -125,6 +129,14 @@ func handleParticipantKicked(client *Client, message Message) {
 	if err := json.Unmarshal(message.Data, &kickData); err != nil {
 		log.Printf("Error parsing participant kick data: %v", err)
 		sendErrorResponse(client, "INVALID_DATA", "Invalid participant kick data format")
+		return
+	}
+	if err := validateRoomModerationPermission(kickData.RoomID, client.userID, "kick participants"); err != nil {
+		sendErrorResponse(client, "permission_denied", err.Error())
+		return
+	}
+	if kickData.KickedID == client.userID {
+		sendErrorResponse(client, "INVALID_TARGET", "Cannot kick yourself")
 		return
 	}
 
@@ -180,6 +192,10 @@ func handleParticipantBanned(client *Client, message Message) {
 
 	if !client.isInRoom(data.RoomID) {
 		sendErrorResponse(client, "NOT_IN_ROOM", "You are not in this room")
+		return
+	}
+	if err := validateRoomModerationPermission(data.RoomID, client.userID, "ban participants"); err != nil {
+		sendErrorResponse(client, "permission_denied", err.Error())
 		return
 	}
 
@@ -243,6 +259,10 @@ func handleParticipantUnbanned(client *Client, message Message) {
 
 	if !client.isInRoom(data.RoomID) {
 		sendErrorResponse(client, "NOT_IN_ROOM", "You are not in this room")
+		return
+	}
+	if !isRoomOwner(data.RoomID, client.userID) && getRoomParticipantRole(data.RoomID, client.userID) != "co-host" {
+		sendErrorResponse(client, "permission_denied", "Only hosts can unban participants")
 		return
 	}
 

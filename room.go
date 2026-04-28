@@ -231,6 +231,17 @@ func isRoomOwner(roomID, userID string) bool {
 	return room.HostID == userID
 }
 
+func getRoomParticipantRole(roomID, userID string) string {
+	roomMutex.RLock()
+	defer roomMutex.RUnlock()
+
+	room, exists := rooms[roomID]
+	if !exists {
+		return ""
+	}
+	return room.Participants[userID]
+}
+
 // transferHost transfers host privileges to another user.
 func transferHost(roomID, newHostID string) error {
 	roomMutex.Lock()

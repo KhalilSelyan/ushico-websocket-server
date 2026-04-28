@@ -353,6 +353,10 @@ func handleSyncRoomState(client *Client, message Message) {
 		sendErrorResponse(client, "NOT_PARTICIPANT", "User is not a participant in this room")
 		return
 	}
+	if clientRole != "host" && clientRole != "co-host" {
+		sendErrorResponse(client, "permission_denied", "Only room hosts can sync room state")
+		return
+	}
 
 	roomMutex.Lock()
 	existingStreamerID := ""

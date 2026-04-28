@@ -81,6 +81,7 @@ func handleFaceModeToggle(client *Client, message Message) {
 		return
 	}
 
+	faceData.UserID = client.userID
 	// Update room state
 	roomMutex.Lock()
 	if room, exists := rooms[faceData.RoomID]; exists {
@@ -88,16 +89,16 @@ func handleFaceModeToggle(client *Client, message Message) {
 			room.FaceModeParticipants = make(map[string]bool)
 		}
 		if faceData.Enabled {
-			room.FaceModeParticipants[faceData.UserID] = true
+			room.FaceModeParticipants[client.userID] = true
 		} else {
-			delete(room.FaceModeParticipants, faceData.UserID)
+			delete(room.FaceModeParticipants, client.userID)
 		}
 	}
 	roomMutex.Unlock()
 
 	logRealtime("face_mode_toggle", map[string]interface{}{
 		"roomId":  faceData.RoomID,
-		"userId":  faceData.UserID,
+		"userId":  client.userID,
 		"enabled": faceData.Enabled,
 	})
 

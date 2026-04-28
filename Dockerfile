@@ -15,7 +15,11 @@ FROM alpine:3.21
 
 WORKDIR /app
 
+RUN addgroup -S ushico && adduser -S ushico -G ushico
+
 COPY --from=builder /app/ushico-websocket-server .
+
+USER ushico
 
 EXPOSE 8085
 

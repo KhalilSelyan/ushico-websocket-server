@@ -14,10 +14,9 @@ import (
 
 // handleConnections upgrades the HTTP connection to a WebSocket and registers the client.
 func handleConnections(w http.ResponseWriter, r *http.Request) {
-	// Extract userID from query parameters
-	userID := r.URL.Query().Get("userID")
-	if userID == "" {
-		http.Error(w, "UserID required in query parameters", http.StatusBadRequest)
+	userID, err := verifyRealtimeToken(r.URL.Query().Get("token"))
+	if err != nil {
+		http.Error(w, "valid realtime token required", http.StatusUnauthorized)
 		return
 	}
 
@@ -104,9 +103,10 @@ func handleMessages() {
 			pongTimeout := 2 * time.Minute
 
 			for client := range clients {
-				if time.Since(client.lastPongTime) > pongTimeout {
+				lastPong := client.getLastPong()
+				if time.Since(lastPong) > pongTimeout {
 					log.Printf("Client %s (user %s) timed out - no pong in %v",
-						client.conn.RemoteAddr(), client.userID, time.Since(client.lastPongTime))
+						client.conn.RemoteAddr(), client.userID, time.Since(lastPong))
 					client.conn.Close()
 					clientsToRemove = append(clientsToRemove, client)
 					continue
