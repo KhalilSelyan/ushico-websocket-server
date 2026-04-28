@@ -20,6 +20,7 @@ func handleRoomJoinRequest(client *Client, message Message) {
 		sendErrorResponse(client, "INVALID_DATA", "Invalid join request data format")
 		return
 	}
+	requestData.RequesterID = client.userID
 
 	roomMutex.RLock()
 	room, exists := rooms[requestData.RoomID]
@@ -46,6 +47,10 @@ func handleJoinRequestApproved(client *Client, message Message) {
 		sendErrorResponse(client, "INVALID_DATA", "Invalid join approval data format")
 		return
 	}
+	if err := validateHostPermission(approvalData.RoomID, client.userID, "approve join requests"); err != nil {
+		sendErrorResponse(client, "permission_denied", err.Error())
+		return
+	}
 
 	broadcastToSpecificUser(approvalData.RequesterID, "join_request_approved", approvalData)
 }
@@ -62,6 +67,10 @@ func handleJoinRequestDenied(client *Client, message Message) {
 	if err := json.Unmarshal(message.Data, &denialData); err != nil {
 		log.Printf("Error parsing join denial data: %v", err)
 		sendErrorResponse(client, "INVALID_DATA", "Invalid join denial data format")
+		return
+	}
+	if err := validateHostPermission(denialData.RoomID, client.userID, "deny join requests"); err != nil {
+		sendErrorResponse(client, "permission_denied", err.Error())
 		return
 	}
 
@@ -81,6 +90,14 @@ func handleRoomInvitation(client *Client, message Message) {
 	if err := json.Unmarshal(message.Data, &inviteData); err != nil {
 		log.Printf("Error parsing room invitation data: %v", err)
 		sendErrorResponse(client, "INVALID_DATA", "Invalid room invitation data format")
+		return
+	}
+	if inviteData.InviterID != client.userID {
+		sendErrorResponse(client, "permission_denied", "Cannot send invitations as another user")
+		return
+	}
+	if err := validateRoomModerationPermission(inviteData.RoomID, client.userID, "invite users"); err != nil {
+		sendErrorResponse(client, "permission_denied", err.Error())
 		return
 	}
 
@@ -168,10 +185,11 @@ func handleLockChanged(client *Client, message Message) {
 		return
 	}
 
-	if !client.isInRoom(data.RoomID) {
-		sendErrorResponse(client, "NOT_IN_ROOM", "You are not in this room")
+	if err := validateRoomModerationPermission(data.RoomID, client.userID, "change lock state"); err != nil {
+		sendErrorResponse(client, "permission_denied", err.Error())
 		return
 	}
+	data.ChangedBy = client.userID
 
 	logRealtime("lock_changed", map[string]interface{}{
 		"roomId":    data.RoomID,

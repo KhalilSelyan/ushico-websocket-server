@@ -16,6 +16,8 @@ func handleCinemaAvatarUpdate(client *Client, message Message) {
 	if !client.isInRoom(avatarData.RoomID) {
 		return
 	}
+	avatarData.UserID = client.userID
+	message.Data, _ = json.Marshal(avatarData)
 
 	// Store last known state for late joiners
 	roomMutex.Lock()
@@ -41,8 +43,13 @@ func handleCinemaAnimation(client *Client, message Message) {
 	if err := json.Unmarshal(message.Data, &animData); err != nil {
 		return
 	}
+	if !client.isInRoom(animData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to send cinema animations")
+		return
+	}
+	animData.UserID = client.userID
 
-	broadcastToRoomExceptSender(animData.RoomID, client.userID, "cinema_animation", message.Data)
+	broadcastToRoomExceptSender(animData.RoomID, client.userID, "cinema_animation", animData)
 }
 
 // handleCinemaMoodChanged broadcasts mood lighting changes to the room
@@ -51,8 +58,13 @@ func handleCinemaMoodChanged(client *Client, message Message) {
 	if err := json.Unmarshal(message.Data, &moodData); err != nil {
 		return
 	}
+	if !client.isInRoom(moodData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to change cinema mood")
+		return
+	}
+	moodData.UserID = client.userID
 
-	broadcastToRoomExceptSender(moodData.RoomID, client.userID, "cinema_mood_changed", message.Data)
+	broadcastToRoomExceptSender(moodData.RoomID, client.userID, "cinema_mood_changed", moodData)
 }
 
 // handleCinemaRoomThemeChanged broadcasts room theme preset changes to the room
@@ -61,8 +73,13 @@ func handleCinemaRoomThemeChanged(client *Client, message Message) {
 	if err := json.Unmarshal(message.Data, &themeData); err != nil {
 		return
 	}
+	if !client.isInRoom(themeData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to change cinema theme")
+		return
+	}
+	themeData.UserID = client.userID
 
-	broadcastToRoomExceptSender(themeData.RoomID, client.userID, "cinema_room_theme_changed", message.Data)
+	broadcastToRoomExceptSender(themeData.RoomID, client.userID, "cinema_room_theme_changed", themeData)
 }
 
 // handleFaceModeToggle handles when a user toggles face mode (webcam on avatar face)
@@ -114,6 +131,10 @@ func handleGetFaceModeState(client *Client, message Message) {
 
 	if err := json.Unmarshal(message.Data, &req); err != nil {
 		sendErrorResponse(client, "INVALID_DATA", "Invalid face mode state request")
+		return
+	}
+	if !client.isInRoom(req.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to request face mode state")
 		return
 	}
 

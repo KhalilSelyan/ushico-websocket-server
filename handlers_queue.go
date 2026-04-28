@@ -25,8 +25,11 @@ func handleQueueAdd(client *Client, message Message) {
 		ID:         fmt.Sprintf("qi_%d", time.Now().UnixNano()),
 		VideoURL:   data.VideoURL,
 		VideoTitle: data.VideoTitle,
-		AddedBy:    data.AddedBy,
-		AddedAt:    time.Now().UnixMilli(),
+		AddedBy: QueueItemAddedBy{
+			UserID:   client.userID,
+			UserName: data.AddedBy.UserName,
+		},
+		AddedAt: time.Now().UnixMilli(),
 	}
 
 	roomMutex.Lock()

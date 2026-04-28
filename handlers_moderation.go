@@ -23,6 +23,10 @@ func handleRoomAnnouncement(client *Client, message Message) {
 		sendErrorResponse(client, "INVALID_DATA", "Invalid announcement data format")
 		return
 	}
+	if !client.isInRoom(announcementData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to send announcements")
+		return
+	}
 
 	// Validate announcement type
 	validTypes := map[string]bool{
@@ -66,6 +70,7 @@ func handleRoleChanged(client *Client, message Message) {
 		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room")
 		return
 	}
+	data.ChangedBy = client.userID
 
 	// Validate host permission
 	if err := validateHostPermission(data.RoomID, client.userID, "change roles"); err != nil {

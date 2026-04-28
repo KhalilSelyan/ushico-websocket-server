@@ -181,6 +181,20 @@ func TestNonStreamerCannotBroadcastStop(t *testing.T) {
 
 func TestSyncRoomStatePreservesActiveStreamer(t *testing.T) {
 	resetStreamTestGlobals()
+	originalAuthorizer := authorizeRoomAccess
+	authorizeRoomAccess = func(roomID, userID string) (*RealtimeRoomAccess, error) {
+		access := &RealtimeRoomAccess{Allowed: true, Role: "host"}
+		access.Room.ID = roomID
+		access.Room.Name = "Room"
+		access.Room.HostID = userID
+		access.Room.Participants = []RealtimeParticipant{
+			{UserID: userID, Role: "host"},
+			{UserID: "streamer", Role: "viewer"},
+		}
+		return access, nil
+	}
+	defer func() { authorizeRoomAccess = originalAuthorizer }()
+
 	room := &Room{
 		ID:                    "room-1",
 		HostID:                "host",

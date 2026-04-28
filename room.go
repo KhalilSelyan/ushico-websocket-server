@@ -134,10 +134,11 @@ func joinRoom(roomID, userID, requestedRole string) (string, bool, error) {
 // leaveRoom removes a user from a room.
 func leaveRoom(roomID, userID string) error {
 	roomMutex.Lock()
-	defer roomMutex.Unlock()
+	streamerStopped := false
 
 	room, exists := rooms[roomID]
 	if !exists {
+		roomMutex.Unlock()
 		return fmt.Errorf("room not found")
 	}
 
@@ -158,16 +159,7 @@ func leaveRoom(roomID, userID string) error {
 	// If current streamer leaves, clear streaming state and notify room
 	if room.CurrentStreamerID == userID {
 		clearRoomStreamer(room)
-		// Broadcast streamer_stopped to room (will be sent after mutex unlocks)
-		go func() {
-			streamerStoppedData := map[string]interface{}{
-				"roomId": roomID,
-				"userId": userID,
-				"mode":   "none",
-				"reason": "disconnect",
-			}
-			broadcastToRoom(roomID, "stream_mode_changed", streamerStoppedData)
-		}()
+		streamerStopped = true
 	}
 
 	// If no participants left, deactivate room
@@ -181,6 +173,18 @@ func leaveRoom(roomID, userID string) error {
 			room.Participants[participantID] = "host"
 			break
 		}
+	}
+
+	roomMutex.Unlock()
+
+	if streamerStopped {
+		streamerStoppedData := map[string]interface{}{
+			"roomId": roomID,
+			"userId": userID,
+			"mode":   "none",
+			"reason": "disconnect",
+		}
+		broadcastToRoom(roomID, "stream_mode_changed", streamerStoppedData)
 	}
 
 	return nil

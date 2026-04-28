@@ -25,6 +25,7 @@ func handleUserTyping(client *Client, message Message) {
 		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to send typing indicators")
 		return
 	}
+	typingData.UserID = client.userID
 
 	// Broadcast typing indicator to all room participants except sender
 	broadcastToRoomExceptSender(typingData.RoomID, client.userID, "user_typing", typingData)
@@ -49,6 +50,7 @@ func handleUserStoppedTyping(client *Client, message Message) {
 		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to send typing indicators")
 		return
 	}
+	typingData.UserID = client.userID
 
 	// Broadcast stop typing indicator to all room participants except sender
 	broadcastToRoomExceptSender(typingData.RoomID, client.userID, "user_stopped_typing", typingData)
@@ -459,6 +461,11 @@ func handleWebcamHubChange(client *Client, message Message) {
 		return
 	}
 
+	if !client.isInRoom(webcamData.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to change webcam hub")
+		return
+	}
+
 	// Broadcast to all room participants
 	broadcastToRoom(webcamData.RoomID, "webcam_hub_change", webcamData)
 	log.Printf("Webcam hub changed in room %s to user %v", webcamData.RoomID, webcamData.NewHubUserId)
@@ -486,6 +493,7 @@ func handleVideoReaction(client *Client, message Message) {
 		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to send reactions")
 		return
 	}
+	reactionData.UserID = client.userID
 
 	validEmojis := map[string]bool{
 		"😂": true, "❤️": true, "😮": true, "👏": true, "😢": true,

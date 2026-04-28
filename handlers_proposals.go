@@ -20,6 +20,7 @@ func handleMoviePropose(client *Client, message Message) {
 		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to propose a movie")
 		return
 	}
+	data.Proposer.ID = client.userID
 
 	roomMutex.Lock()
 	room, exists := rooms[data.RoomID]
@@ -151,7 +152,8 @@ func handleMovieVote(client *Client, message Message) {
 		return
 	}
 
-	voterID := data.Voter.ID
+	data.Voter.ID = client.userID
+	voterID := client.userID
 	newVotesUp := make([]MovieProposalUser, 0, len(proposal.VotesUp))
 	for _, v := range proposal.VotesUp {
 		if v.ID != voterID {
@@ -218,6 +220,7 @@ func handleMovieApprove(client *Client, message Message) {
 		sendErrorResponse(client, "PERMISSION_DENIED", "Only host can approve movies")
 		return
 	}
+	data.Approver.ID = client.userID
 
 	roomMutex.Lock()
 	room, exists := rooms[data.RoomID]

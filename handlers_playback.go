@@ -15,6 +15,10 @@ func handleHostSync(client *Client, message Message) {
 		sendErrorResponse(client, "INVALID_ROOM_ID", "Invalid room ID format")
 		return
 	}
+	if err := validateRoomMembership(client, roomID); err != nil {
+		sendErrorResponse(client, "permission_denied", err.Error())
+		return
+	}
 
 	if err := validateHostPermission(roomID, client.userID, "control video playback"); err != nil {
 		log.Printf("Permission denied for user %s in room %s: %v", client.userID, roomID, err)
@@ -145,12 +149,21 @@ func handleTransferSessionControl(client *Client, message Message) {
 		sendErrorResponse(client, "PERMISSION_DENIED", "Only room owner can delegate playback control")
 		return
 	}
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to delegate playback control")
+		return
+	}
 
 	roomMutex.Lock()
 	room, exists := rooms[data.RoomID]
 	if !exists {
 		roomMutex.Unlock()
 		sendErrorResponse(client, "ROOM_NOT_FOUND", "Room not found")
+		return
+	}
+	if _, ok := room.Participants[data.NewHostID]; !ok {
+		roomMutex.Unlock()
+		sendErrorResponse(client, "INVALID_TARGET", "New session host must be in the room")
 		return
 	}
 	room.SessionHostID = data.NewHostID
@@ -187,6 +200,10 @@ func handleReclaimSessionControl(client *Client, message Message) {
 
 	if !isRoomOwner(data.RoomID, client.userID) {
 		sendErrorResponse(client, "PERMISSION_DENIED", "Only room owner can reclaim playback control")
+		return
+	}
+	if !client.isInRoom(data.RoomID) {
+		sendErrorResponse(client, "NOT_IN_ROOM", "Must be in room to reclaim playback control")
 		return
 	}
 

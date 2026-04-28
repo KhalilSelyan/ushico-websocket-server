@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 )
 
 func handleCreateRoom(client *Client, message Message) {
@@ -52,7 +51,15 @@ func handleJoinRoom(client *Client, message Message) {
 		return
 	}
 
-	role, isNewJoin, err := joinRoom(roomData.RoomID, client.userID, roomData.Role)
+	access, err := authorizeRoomAccess(roomData.RoomID, client.userID)
+	if err != nil {
+		log.Printf("Room authorization failed for user %s in room %s: %v", client.userID, roomData.RoomID, err)
+		sendErrorResponse(client, "permission_denied", "You do not have access to this room")
+		return
+	}
+	upsertAuthorizedRoom(access)
+
+	role, isNewJoin, err := joinRoom(roomData.RoomID, client.userID, access.Role)
 	if err != nil {
 		log.Printf("Error joining room: %v", err)
 		sendErrorResponse(client, "JOIN_FAILED", err.Error())
@@ -230,13 +237,18 @@ func handleLeaveRoom(client *Client, message Message) {
 	broadcast <- responseMessage
 
 	roomMutex.RLock()
-	room, exists := rooms[roomData.RoomID]
+	participantCount := 0
+	newHostID := ""
+	if room, exists := rooms[roomData.RoomID]; exists {
+		participantCount = len(room.Participants)
+		newHostID = room.HostID
+	}
 	roomMutex.RUnlock()
 
-	if exists && wasHost && len(room.Participants) > 0 {
+	if wasHost && participantCount > 0 {
 		transferData, _ := json.Marshal(map[string]interface{}{
 			"oldHostId": client.userID,
-			"newHostId": room.HostID,
+			"newHostId": newHostID,
 		})
 
 		transferMessage := Message{
@@ -339,57 +351,19 @@ func handleSyncRoomState(client *Client, message Message) {
 		return
 	}
 
-	var clientRole string
-	var isParticipant bool
-	for _, p := range roomData.Participants {
-		if p.UserID == client.userID {
-			clientRole = p.Role
-			isParticipant = true
-			break
-		}
-	}
-
-	if !isParticipant {
-		sendErrorResponse(client, "NOT_PARTICIPANT", "User is not a participant in this room")
+	access, err := authorizeRoomAccess(roomData.RoomID, client.userID)
+	if err != nil {
+		log.Printf("Room sync authorization failed for user %s in room %s: %v", client.userID, roomData.RoomID, err)
+		sendErrorResponse(client, "permission_denied", "You do not have access to this room")
 		return
 	}
+	clientRole := access.Role
 	if clientRole != "host" && clientRole != "co-host" {
 		sendErrorResponse(client, "permission_denied", "Only room hosts can sync room state")
 		return
 	}
 
-	roomMutex.Lock()
-	existingStreamerID := ""
-	existingStreamMode := ""
-	existingStreamerPeerID := ""
-	if existingRoom, exists := rooms[roomData.RoomID]; exists {
-		existingStreamerID = existingRoom.CurrentStreamerID
-		existingStreamMode = existingRoom.CurrentStreamMode
-		existingStreamerPeerID = existingRoom.CurrentStreamerPeerID
-	}
-	room := &Room{
-		ID:                    roomData.RoomID,
-		HostID:                roomData.HostID,
-		Name:                  roomData.RoomName,
-		Participants:          make(map[string]string),
-		Presence:              make(map[string]string),
-		WebcamParticipants:    make(map[string]WebcamStateParticipant),
-		FaceModeParticipants:  make(map[string]bool),
-		IsActive:              true,
-		CreatedAt:             time.Now(),
-		CurrentVideo:          SyncData{},
-		CurrentStreamerID:     existingStreamerID,
-		CurrentStreamMode:     existingStreamMode,
-		CurrentStreamerPeerID: existingStreamerPeerID,
-	}
-
-	for _, p := range roomData.Participants {
-		room.Participants[p.UserID] = p.Role
-		room.Presence[p.UserID] = "active"
-	}
-
-	rooms[roomData.RoomID] = room
-	roomMutex.Unlock()
+	upsertAuthorizedRoom(access)
 
 	client.joinRoomAsClient(roomData.RoomID, clientRole)
 	client.subscribe(fmt.Sprintf("room-%s", roomData.RoomID))
@@ -409,8 +383,8 @@ func handleSyncRoomState(client *Client, message Message) {
 		"roomId":                roomData.RoomID,
 		"role":                  clientRole,
 		"synced":                true,
-		"hostId":                roomData.HostID,
-		"participants":          len(roomData.Participants),
+		"hostId":                access.Room.HostID,
+		"participants":          len(access.Room.Participants),
 		"currentStreamerId":     currentStreamerID,
 		"currentStreamMode":     currentStreamMode,
 		"currentStreamerPeerId": currentStreamerPeerID,
