@@ -173,6 +173,7 @@ func handleStreamModeChanged(client *Client, message Message) {
 		UserID    string `json:"userId"`
 		Mode      string `json:"mode"` // "none", "screen", "camera", "file", "url"
 		PeerID    string `json:"peerId,omitempty"`
+		Reason    string `json:"reason,omitempty"`
 		Timestamp string `json:"timestamp"`
 	}
 
@@ -186,6 +187,11 @@ func handleStreamModeChanged(client *Client, message Message) {
 	validModes := map[string]bool{"none": true, "screen": true, "camera": true, "file": true, "url": true}
 	if !validModes[modeData.Mode] {
 		sendErrorResponse(client, "INVALID_MODE", "Mode must be 'none', 'screen', 'camera', 'file', or 'url'")
+		return
+	}
+
+	if modeData.Mode != "none" && modeData.Mode != "url" && modeData.PeerID == "" {
+		sendErrorResponse(client, "MISSING_PEER_ID", "Peer id is required for live streams")
 		return
 	}
 
@@ -214,15 +220,17 @@ func handleStreamModeChanged(client *Client, message Message) {
 	if modeData.Mode == "none" {
 		// Only the current streamer can stop streaming
 		if room.CurrentStreamerID == client.userID {
-			room.CurrentStreamerID = ""
-			room.CurrentStreamMode = ""
-			room.CurrentStreamerPeerID = ""
+			clearRoomStreamer(room)
 		}
 	} else {
 		// Start streaming - lock to this user
 		room.CurrentStreamerID = client.userID
 		room.CurrentStreamMode = modeData.Mode
 		room.CurrentStreamerPeerID = modeData.PeerID
+	}
+	modeData.UserID = client.userID
+	if modeData.Mode == "none" && modeData.Reason == "" {
+		modeData.Reason = "stopped"
 	}
 	roomMutex.Unlock()
 

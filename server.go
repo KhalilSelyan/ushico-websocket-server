@@ -67,76 +67,7 @@ func handleMessages() {
 			mutex.Unlock()
 
 		case client := <-unregister:
-			// Unregister a client.
-			log.Printf("Client unregistered from: %s with userID: %s", client.conn.RemoteAddr(), client.userID)
-
-			// Remove client from all rooms and update presence
-			for roomID := range client.rooms {
-				// Mark user as offline before leaving
-				roomMutex.Lock()
-				if room, exists := rooms[roomID]; exists && room.Presence != nil {
-					room.Presence[client.userID] = "offline"
-					// Clean up cinema avatar state
-					if room.CinemaAvatars != nil {
-						delete(room.CinemaAvatars, client.userID)
-					}
-					if room.WebcamParticipants != nil {
-						delete(room.WebcamParticipants, client.userID)
-					}
-					logRealtime("client_disconnect_cleanup", map[string]interface{}{
-						"roomId": roomID,
-						"userId": client.userID,
-					})
-					// Broadcast offline status using channelSubs for O(1) lookup
-					offlineData, _ := json.Marshal(map[string]interface{}{
-						"roomId":        roomID,
-						"userId":        client.userID,
-						"userName":      client.userName,
-						"presenceState": "offline",
-						"timestamp":     time.Now().Format(time.RFC3339),
-					})
-
-					offlineMessage := Message{
-						Channel: fmt.Sprintf("room-%s", roomID),
-						Event:   "user_presence_updated",
-						Data:    offlineData,
-					}
-
-					// Send to other room participants using channelSubs
-					channel := fmt.Sprintf("room-%s", roomID)
-					channelMutex.RLock()
-					for otherClient := range channelSubs[channel] {
-						if otherClient != client {
-							select {
-							case otherClient.send <- offlineMessage:
-							default:
-								log.Printf("Client %s send buffer full during presence update", otherClient.userID)
-							}
-						}
-					}
-					channelMutex.RUnlock()
-				}
-				roomMutex.Unlock()
-
-				if err := leaveRoom(roomID, client.userID); err != nil {
-					log.Printf("Error removing user %s from room %s during disconnect: %v", client.userID, roomID, err)
-				}
-			}
-
-			// Clean up empty rooms
-			cleanupEmptyRooms()
-
-			// Remove from channelSubs map
-			client.unsubscribeAll()
-
-			mutex.Lock()
-			if _, ok := clients[client]; ok {
-				delete(clients, client)
-				// Close send channels to stop writePump goroutine
-				close(client.send)
-				close(client.sendBinary)
-			}
-			mutex.Unlock()
+			cleanupDisconnectedClient(client)
 
 		case message := <-broadcast:
 			// Broadcast a message to all subscribed clients using O(1) channel lookup.
@@ -190,15 +121,81 @@ func handleMessages() {
 			}
 			mutex.RUnlock()
 
-			if len(clientsToRemove) > 0 {
-				mutex.Lock()
-				for _, client := range clientsToRemove {
-					delete(clients, client)
-				}
-				mutex.Unlock()
+			for _, client := range clientsToRemove {
+				cleanupDisconnectedClient(client)
 			}
 		}
 	}
+}
+
+func cleanupDisconnectedClient(client *Client) {
+	log.Printf("Client unregistered from: %s with userID: %s", client.conn.RemoteAddr(), client.userID)
+
+	client.mu.Lock()
+	roomIDs := make([]string, 0, len(client.rooms))
+	for roomID := range client.rooms {
+		roomIDs = append(roomIDs, roomID)
+	}
+	client.mu.Unlock()
+
+	for _, roomID := range roomIDs {
+		roomMutex.Lock()
+		if room, exists := rooms[roomID]; exists && room.Presence != nil {
+			room.Presence[client.userID] = "offline"
+			if room.CinemaAvatars != nil {
+				delete(room.CinemaAvatars, client.userID)
+			}
+			if room.WebcamParticipants != nil {
+				delete(room.WebcamParticipants, client.userID)
+			}
+			logRealtime("client_disconnect_cleanup", map[string]interface{}{
+				"roomId": roomID,
+				"userId": client.userID,
+			})
+			offlineData, _ := json.Marshal(map[string]interface{}{
+				"roomId":        roomID,
+				"userId":        client.userID,
+				"userName":      client.userName,
+				"presenceState": "offline",
+				"timestamp":     time.Now().Format(time.RFC3339),
+			})
+
+			offlineMessage := Message{
+				Channel: fmt.Sprintf("room-%s", roomID),
+				Event:   "user_presence_updated",
+				Data:    offlineData,
+			}
+
+			channel := fmt.Sprintf("room-%s", roomID)
+			channelMutex.RLock()
+			for otherClient := range channelSubs[channel] {
+				if otherClient != client {
+					select {
+					case otherClient.send <- offlineMessage:
+					default:
+						log.Printf("Client %s send buffer full during presence update", otherClient.userID)
+					}
+				}
+			}
+			channelMutex.RUnlock()
+		}
+		roomMutex.Unlock()
+
+		if err := leaveRoom(roomID, client.userID); err != nil {
+			log.Printf("Error removing user %s from room %s during disconnect: %v", client.userID, roomID, err)
+		}
+	}
+
+	cleanupEmptyRooms()
+	client.unsubscribeAll()
+
+	mutex.Lock()
+	if _, ok := clients[client]; ok {
+		delete(clients, client)
+		close(client.send)
+		close(client.sendBinary)
+	}
+	mutex.Unlock()
 }
 
 // startReminderCron starts a background goroutine that calls the SvelteKit

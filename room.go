@@ -37,6 +37,12 @@ type Room struct {
 	CurrentStreamerPeerID string                            `json:"currentStreamerPeerId,omitempty"` // PeerJS id viewers connect to for the current stream
 }
 
+func clearRoomStreamer(room *Room) {
+	room.CurrentStreamerID = ""
+	room.CurrentStreamMode = ""
+	room.CurrentStreamerPeerID = ""
+}
+
 // RoomData for room creation/management events.
 type RoomData struct {
 	RoomID   string   `json:"roomId"`
@@ -151,9 +157,7 @@ func leaveRoom(roomID, userID string) error {
 
 	// If current streamer leaves, clear streaming state and notify room
 	if room.CurrentStreamerID == userID {
-		room.CurrentStreamerID = ""
-		room.CurrentStreamMode = ""
-		room.CurrentStreamerPeerID = ""
+		clearRoomStreamer(room)
 		// Broadcast streamer_stopped to room (will be sent after mutex unlocks)
 		go func() {
 			streamerStoppedData := map[string]interface{}{

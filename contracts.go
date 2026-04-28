@@ -364,7 +364,7 @@ type StreamModeChangedData struct {
 	UserID string `json:"userId"`
 	Mode   string `json:"mode"` // "none", "screen", "camera", "file", "url"
 	PeerID string `json:"peerId,omitempty"`
-	Reason string `json:"reason,omitempty"` // "disconnect" when streamer leaves unexpectedly
+	Reason string `json:"reason,omitempty"` // "stopped", "disconnect", "replaced", or "failed"
 }
 
 type StreamStatusResponse struct {
