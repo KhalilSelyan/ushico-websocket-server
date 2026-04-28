@@ -30,6 +30,8 @@ func TestCriticalContractsFileVersionAndEvents(t *testing.T) {
 		"room_video_state",
 		"user_presence_updated",
 		"room_presence_status",
+		"stream_mode_changed",
+		"stream_status",
 		"webcam_join",
 		"webcam_leave",
 		"webcam_toggle",

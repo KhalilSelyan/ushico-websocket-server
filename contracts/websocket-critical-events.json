@@ -37,6 +37,25 @@
         "participants": "Array<{ userId: string, userName: string, presenceState: active|away|offline }>"
       }
     },
+    "stream_mode_changed": {
+      "channel": "room-{roomId}",
+      "fields": {
+        "roomId": "string",
+        "userId": "string",
+        "mode": "none|url|screen|camera|file",
+        "peerId": "string?",
+        "reason": "stopped|disconnect|replaced|failed?"
+      }
+    },
+    "stream_status": {
+      "channel": "user-{userId}",
+      "fields": {
+        "roomId": "string",
+        "currentStreamerId": "string?",
+        "currentStreamMode": "string?",
+        "currentStreamerPeerId": "string?"
+      }
+    },
     "webcam_join": {
       "channel": "room-{roomId}",
       "fields": {
