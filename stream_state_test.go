@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 )
 
@@ -133,5 +134,40 @@ func TestStoppingStreamClearsPeerIDAndAddsReason(t *testing.T) {
 	}
 	if broadcast.Reason != "stopped" {
 		t.Fatalf("reason = %q, want stopped", broadcast.Reason)
+	}
+}
+
+func TestDisconnectCleanupIsIdempotent(t *testing.T) {
+	resetStreamTestGlobals()
+	client := &Client{
+		userID:       "user-1",
+		rooms:        map[string]string{},
+		channels:     map[string]bool{},
+		roomChannels: map[string]string{},
+		send:         make(chan Message, 1),
+		sendBinary:   make(chan []byte, 1),
+	}
+
+	mutex.Lock()
+	clients[client] = true
+	mutex.Unlock()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		cleanupDisconnectedClient(client)
+	}()
+	go func() {
+		defer wg.Done()
+		cleanupDisconnectedClient(client)
+	}()
+	wg.Wait()
+
+	mutex.RLock()
+	_, exists := clients[client]
+	mutex.RUnlock()
+	if exists {
+		t.Fatal("client still registered after cleanup")
 	}
 }

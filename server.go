@@ -129,7 +129,19 @@ func handleMessages() {
 }
 
 func cleanupDisconnectedClient(client *Client) {
-	log.Printf("Client unregistered from: %s with userID: %s", client.conn.RemoteAddr(), client.userID)
+	remoteAddr := "unknown"
+	if client.conn != nil {
+		remoteAddr = client.conn.RemoteAddr().String()
+	}
+	log.Printf("Client unregistered from: %s with userID: %s", remoteAddr, client.userID)
+
+	mutex.Lock()
+	if _, ok := clients[client]; !ok {
+		mutex.Unlock()
+		return
+	}
+	delete(clients, client)
+	mutex.Unlock()
 
 	client.mu.Lock()
 	roomIDs := make([]string, 0, len(client.rooms))
@@ -189,13 +201,8 @@ func cleanupDisconnectedClient(client *Client) {
 	cleanupEmptyRooms()
 	client.unsubscribeAll()
 
-	mutex.Lock()
-	if _, ok := clients[client]; ok {
-		delete(clients, client)
-		close(client.send)
-		close(client.sendBinary)
-	}
-	mutex.Unlock()
+	close(client.send)
+	close(client.sendBinary)
 }
 
 // startReminderCron starts a background goroutine that calls the SvelteKit
