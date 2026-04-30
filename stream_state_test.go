@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"math"
 	"sync"
 	"testing"
 )
@@ -66,6 +68,58 @@ func TestStreamModeStoresPeerIDAndOverwritesSpoofedUserID(t *testing.T) {
 	}
 }
 
+func TestStreamModeStoresAndBroadcastsMetadata(t *testing.T) {
+	resetStreamTestGlobals()
+	room := &Room{
+		ID:           "room-1",
+		Participants: map[string]string{"streamer": "viewer"},
+		Presence:     map[string]string{},
+		IsActive:     true,
+	}
+	roomMutex.Lock()
+	rooms[room.ID] = room
+	roomMutex.Unlock()
+
+	client := &Client{
+		userID:       "streamer",
+		rooms:        map[string]string{"room-1": "viewer"},
+		channels:     map[string]bool{},
+		roomChannels: map[string]string{"room-1": "room-room-1"},
+		send:         make(chan Message, 1),
+	}
+	channelMutex.Lock()
+	channelSubs["room-room-1"] = map[*Client]bool{client: true}
+	channelMutex.Unlock()
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"roomId": "room-1",
+		"mode":   "file",
+		"peerId": "peer-streamer",
+		"metadata": map[string]interface{}{
+			"fileName": "movie.mp4",
+			"fileSize": 12345678,
+			"duration": 3661.5,
+		},
+	})
+	handleStreamModeChanged(client, Message{Data: payload})
+
+	roomMutex.RLock()
+	metadata := room.StreamMetadata
+	roomMutex.RUnlock()
+	if metadata.FileName != "movie.mp4" || metadata.FileSize != 12345678 || metadata.Duration != 3661.5 {
+		t.Fatalf("metadata = %+v", metadata)
+	}
+
+	msg := <-client.send
+	var broadcast StreamModeChangedData
+	if err := json.Unmarshal(msg.Data, &broadcast); err != nil {
+		t.Fatalf("parse broadcast: %v", err)
+	}
+	if broadcast.Metadata.FileName != "movie.mp4" {
+		t.Fatalf("broadcast metadata = %+v", broadcast.Metadata)
+	}
+}
+
 func TestLeaveRoomClearsStreamerPeerID(t *testing.T) {
 	resetStreamTestGlobals()
 	room := &Room{
@@ -102,6 +156,7 @@ func TestStoppingStreamClearsPeerIDAndAddsReason(t *testing.T) {
 		CurrentStreamerID:     "streamer",
 		CurrentStreamMode:     "file",
 		CurrentStreamerPeerID: "peer-streamer",
+		StreamMetadata:        StreamMetadata{FileName: "movie.mp4", FileSize: 100, Duration: 10},
 	}
 	roomMutex.Lock()
 	rooms[room.ID] = room
@@ -124,6 +179,9 @@ func TestStoppingStreamClearsPeerIDAndAddsReason(t *testing.T) {
 	roomMutex.RLock()
 	if room.CurrentStreamerID != "" || room.CurrentStreamMode != "" || room.CurrentStreamerPeerID != "" {
 		t.Fatalf("stream state not cleared: id=%q mode=%q peer=%q", room.CurrentStreamerID, room.CurrentStreamMode, room.CurrentStreamerPeerID)
+	}
+	if room.StreamMetadata != (StreamMetadata{}) {
+		t.Fatalf("metadata not cleared: %+v", room.StreamMetadata)
 	}
 	roomMutex.RUnlock()
 
@@ -204,6 +262,7 @@ func TestSyncRoomStatePreservesActiveStreamer(t *testing.T) {
 		CurrentStreamerID:     "streamer",
 		CurrentStreamMode:     "camera",
 		CurrentStreamerPeerID: "peer-streamer",
+		StreamMetadata:        StreamMetadata{FileName: "movie.mp4", FileSize: 100, Duration: 10},
 	}
 	roomMutex.Lock()
 	rooms[room.ID] = room
@@ -229,10 +288,54 @@ func TestSyncRoomStatePreservesActiveStreamer(t *testing.T) {
 	handleSyncRoomState(client, Message{Data: payload})
 
 	roomMutex.RLock()
-	preserved := rooms["room-1"].CurrentStreamerID == "streamer" && rooms["room-1"].CurrentStreamMode == "camera" && rooms["room-1"].CurrentStreamerPeerID == "peer-streamer"
+	preserved := rooms["room-1"].CurrentStreamerID == "streamer" && rooms["room-1"].CurrentStreamMode == "camera" && rooms["room-1"].CurrentStreamerPeerID == "peer-streamer" && rooms["room-1"].StreamMetadata.FileName == "movie.mp4"
 	roomMutex.RUnlock()
 	if !preserved {
 		t.Fatal("sync_room_state did not preserve active streamer")
+	}
+}
+
+func encodeHostSyncTestPayload(source byte) []byte {
+	roomID := []byte("room-1")
+	url := []byte("https://example.com/video.mp4")
+	videoID := []byte("video-1")
+	data := make([]byte, 0, 1+8+8+1+1+1+4+len(roomID)+len(url)+len(videoID))
+	data = append(data, BinaryMsgHostSync)
+	tmp := make([]byte, 8)
+	binary.LittleEndian.PutUint64(tmp, math.Float64bits(12.5))
+	data = append(data, tmp...)
+	binary.LittleEndian.PutUint64(tmp, uint64(12345))
+	data = append(data, tmp...)
+	data = append(data, 1) // playing
+	data = append(data, 3) // seek
+	data = append(data, source)
+	data = append(data, byte(len(roomID)))
+	lenBytes := make([]byte, 2)
+	binary.LittleEndian.PutUint16(lenBytes, uint16(len(url)))
+	data = append(data, lenBytes...)
+	data = append(data, byte(len(videoID)))
+	data = append(data, roomID...)
+	data = append(data, url...)
+	data = append(data, videoID...)
+	return data
+}
+
+func TestBinaryHostSyncDecodesSourceMetadata(t *testing.T) {
+	data := encodeHostSyncTestPayload(3) // file
+	roomID, err := decodeBinaryHostSync(data)
+	if err != nil {
+		t.Fatalf("decode room id: %v", err)
+	}
+	if roomID != "room-1" {
+		t.Fatalf("room id = %q", roomID)
+	}
+
+	syncData := binaryHostSyncToSyncData(data)
+	if syncData == nil {
+		t.Fatal("sync data is nil")
+	}
+	if syncData.Source != "file" || syncData.State != "playing" || syncData.Reason != "seek" {
+		t.Fatalf("sync data = %+v", syncData)
 	}
 }
 
