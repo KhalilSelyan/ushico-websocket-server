@@ -222,10 +222,15 @@ func handleStreamModeChanged(client *Client, message Message) {
 
 	// Update room streaming state
 	if modeData.Mode == "none" {
-		// Only the current streamer can stop streaming
-		if room.CurrentStreamerID != client.userID {
+		// The active streamer can stop their own stream. Room hosts/co-hosts can force-stop.
+		clientRole := room.Participants[client.userID]
+		canForceStop := room.HostID == client.userID || clientRole == "host" || clientRole == "co-host"
+		if room.CurrentStreamerID != client.userID && !canForceStop {
 			roomMutex.Unlock()
 			return
+		}
+		if room.CurrentStreamerID != client.userID && modeData.Reason == "" {
+			modeData.Reason = "force-stopped"
 		}
 		clearRoomStreamer(room)
 	} else {

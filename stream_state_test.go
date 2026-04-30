@@ -237,6 +237,54 @@ func TestNonStreamerCannotBroadcastStop(t *testing.T) {
 	}
 }
 
+func TestRoomManagerCanForceStopActiveStream(t *testing.T) {
+	resetStreamTestGlobals()
+	room := &Room{
+		ID:                    "room-1",
+		HostID:                "host",
+		Participants:          map[string]string{"host": "host", "streamer": "viewer"},
+		Presence:              map[string]string{},
+		IsActive:              true,
+		CurrentStreamerID:     "streamer",
+		CurrentStreamMode:     "file",
+		CurrentStreamerPeerID: "peer-streamer",
+		StreamMetadata:        StreamMetadata{FileName: "movie.mp4"},
+	}
+	roomMutex.Lock()
+	rooms[room.ID] = room
+	roomMutex.Unlock()
+
+	client := &Client{
+		userID:       "host",
+		rooms:        map[string]string{"room-1": "host"},
+		channels:     map[string]bool{},
+		roomChannels: map[string]string{"room-1": "room-room-1"},
+		send:         make(chan Message, 1),
+	}
+	channelMutex.Lock()
+	channelSubs["room-room-1"] = map[*Client]bool{client: true}
+	channelMutex.Unlock()
+
+	payload, _ := json.Marshal(map[string]string{"roomId": "room-1", "mode": "none"})
+	handleStreamModeChanged(client, Message{Data: payload})
+
+	roomMutex.RLock()
+	cleared := room.CurrentStreamerID == "" && room.CurrentStreamMode == "" && room.CurrentStreamerPeerID == "" && room.StreamMetadata == (StreamMetadata{})
+	roomMutex.RUnlock()
+	if !cleared {
+		t.Fatalf("stream state was not force-stopped: %+v", room)
+	}
+
+	msg := <-client.send
+	var broadcast StreamModeChangedData
+	if err := json.Unmarshal(msg.Data, &broadcast); err != nil {
+		t.Fatalf("parse broadcast: %v", err)
+	}
+	if broadcast.Reason != "force-stopped" {
+		t.Fatalf("reason = %q, want force-stopped", broadcast.Reason)
+	}
+}
+
 func TestSyncRoomStatePreservesActiveStreamer(t *testing.T) {
 	resetStreamTestGlobals()
 	originalAuthorizer := authorizeRoomAccess
