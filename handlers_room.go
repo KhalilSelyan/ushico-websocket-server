@@ -372,10 +372,12 @@ func handleSyncRoomState(client *Client, message Message) {
 	currentStreamerID := ""
 	currentStreamMode := ""
 	currentStreamerPeerID := ""
+	streamMetadata := StreamMetadata{}
 	if r, exists := rooms[roomData.RoomID]; exists {
 		currentStreamerID = r.CurrentStreamerID
 		currentStreamMode = r.CurrentStreamMode
 		currentStreamerPeerID = r.CurrentStreamerPeerID
+		streamMetadata = r.StreamMetadata
 	}
 	roomMutex.RUnlock()
 
@@ -388,6 +390,7 @@ func handleSyncRoomState(client *Client, message Message) {
 		"currentStreamerId":     currentStreamerID,
 		"currentStreamMode":     currentStreamMode,
 		"currentStreamerPeerId": currentStreamerPeerID,
+		"streamMetadata":        streamMetadata,
 	})
 
 	responseMessage := Message{

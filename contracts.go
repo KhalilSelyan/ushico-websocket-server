@@ -361,18 +361,26 @@ type MovieRejectedData struct {
 // Stream mode types for FIFO streaming (first-to-stream gets exclusive access)
 
 type StreamModeChangedData struct {
-	RoomID string `json:"roomId"`
-	UserID string `json:"userId"`
-	Mode   string `json:"mode"` // "none", "screen", "camera", "file", "url"
-	PeerID string `json:"peerId,omitempty"`
-	Reason string `json:"reason,omitempty"` // "stopped", "disconnect", "replaced", or "failed"
+	RoomID   string         `json:"roomId"`
+	UserID   string         `json:"userId"`
+	Mode     string         `json:"mode"` // "none", "screen", "camera", "file", "url"
+	PeerID   string         `json:"peerId,omitempty"`
+	Reason   string         `json:"reason,omitempty"` // "stopped", "disconnect", "replaced", or "failed"
+	Metadata StreamMetadata `json:"metadata,omitempty"`
+}
+
+type StreamMetadata struct {
+	FileName string  `json:"fileName,omitempty"`
+	FileSize int64   `json:"fileSize,omitempty"`
+	Duration float64 `json:"duration,omitempty"`
 }
 
 type StreamStatusResponse struct {
-	RoomID                string `json:"roomId"`
-	CurrentStreamerID     string `json:"currentStreamerId,omitempty"`
-	CurrentStreamMode     string `json:"currentStreamMode,omitempty"`
-	CurrentStreamerPeerID string `json:"currentStreamerPeerId,omitempty"`
+	RoomID                string         `json:"roomId"`
+	CurrentStreamerID     string         `json:"currentStreamerId,omitempty"`
+	CurrentStreamMode     string         `json:"currentStreamMode,omitempty"`
+	CurrentStreamerPeerID string         `json:"currentStreamerPeerId,omitempty"`
+	StreamMetadata        StreamMetadata `json:"streamMetadata,omitempty"`
 }
 
 // Session control types for temporary playback delegation

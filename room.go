@@ -35,12 +35,14 @@ type Room struct {
 	CurrentStreamerID     string                            `json:"currentStreamerId,omitempty"`     // User currently streaming (empty = nobody streaming)
 	CurrentStreamMode     string                            `json:"currentStreamMode,omitempty"`     // Current stream mode (screen, camera, file, none)
 	CurrentStreamerPeerID string                            `json:"currentStreamerPeerId,omitempty"` // PeerJS id viewers connect to for the current stream
+	StreamMetadata        StreamMetadata                    `json:"streamMetadata,omitempty"`
 }
 
 func clearRoomStreamer(room *Room) {
 	room.CurrentStreamerID = ""
 	room.CurrentStreamMode = ""
 	room.CurrentStreamerPeerID = ""
+	room.StreamMetadata = StreamMetadata{}
 }
 
 // RoomData for room creation/management events.

@@ -172,12 +172,13 @@ func handleGetRoomPresence(client *Client, message Message) {
 // handleStreamModeChanged broadcasts when someone starts/stops streaming
 func handleStreamModeChanged(client *Client, message Message) {
 	var modeData struct {
-		RoomID    string `json:"roomId"`
-		UserID    string `json:"userId"`
-		Mode      string `json:"mode"` // "none", "screen", "camera", "file", "url"
-		PeerID    string `json:"peerId,omitempty"`
-		Reason    string `json:"reason,omitempty"`
-		Timestamp string `json:"timestamp"`
+		RoomID    string         `json:"roomId"`
+		UserID    string         `json:"userId"`
+		Mode      string         `json:"mode"` // "none", "screen", "camera", "file", "url"
+		PeerID    string         `json:"peerId,omitempty"`
+		Reason    string         `json:"reason,omitempty"`
+		Timestamp string         `json:"timestamp"`
+		Metadata  StreamMetadata `json:"metadata,omitempty"`
 	}
 
 	if err := json.Unmarshal(message.Data, &modeData); err != nil {
@@ -232,6 +233,7 @@ func handleStreamModeChanged(client *Client, message Message) {
 		room.CurrentStreamerID = client.userID
 		room.CurrentStreamMode = modeData.Mode
 		room.CurrentStreamerPeerID = modeData.PeerID
+		room.StreamMetadata = modeData.Metadata
 	}
 	modeData.UserID = client.userID
 	if modeData.Mode == "none" && modeData.Reason == "" {
@@ -271,6 +273,7 @@ func handleGetStreamStatus(client *Client, message Message) {
 			CurrentStreamerID:     room.CurrentStreamerID,
 			CurrentStreamMode:     room.CurrentStreamMode,
 			CurrentStreamerPeerID: room.CurrentStreamerPeerID,
+			StreamMetadata:        room.StreamMetadata,
 		}
 	} else {
 		response = StreamStatusResponse{

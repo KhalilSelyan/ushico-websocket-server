@@ -78,6 +78,7 @@ func upsertAuthorizedRoom(access *RealtimeRoomAccess) {
 	existingStreamerID := ""
 	existingStreamMode := ""
 	existingStreamerPeerID := ""
+	existingStreamMetadata := StreamMetadata{}
 	currentVideo := SyncData{}
 	queue := make([]QueueItem, 0)
 	mutedUsers := make(map[string]MuteInfo)
@@ -86,6 +87,7 @@ func upsertAuthorizedRoom(access *RealtimeRoomAccess) {
 		existingStreamerID = existingRoom.CurrentStreamerID
 		existingStreamMode = existingRoom.CurrentStreamMode
 		existingStreamerPeerID = existingRoom.CurrentStreamerPeerID
+		existingStreamMetadata = existingRoom.StreamMetadata
 		currentVideo = existingRoom.CurrentVideo
 		queue = existingRoom.Queue
 		mutedUsers = existingRoom.MutedUsers
@@ -110,6 +112,7 @@ func upsertAuthorizedRoom(access *RealtimeRoomAccess) {
 		CurrentStreamerID:     existingStreamerID,
 		CurrentStreamMode:     existingStreamMode,
 		CurrentStreamerPeerID: existingStreamerPeerID,
+		StreamMetadata:        existingStreamMetadata,
 	}
 
 	for _, participant := range access.Room.Participants {

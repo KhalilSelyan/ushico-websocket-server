@@ -67,7 +67,7 @@ func decodeBinaryAvatarUpdate(data []byte) (roomID string, err error) {
 }
 
 // decodeBinaryHostSync extracts roomID from binary host sync message
-// Format: msgType(1) + timestamp(8) + sentAt(8) + state(1) + reason(1) + roomIdLen(1) + urlLen(2) + videoIdLen(1) + roomId + url + videoId
+// Format: msgType(1) + timestamp(8) + sentAt(8) + state(1) + reason(1) + source(1 optional) + roomIdLen(1) + urlLen(2) + videoIdLen(1) + roomId + url + videoId
 func decodeBinaryHostSync(data []byte) (roomID string, err error) {
 	if len(data) < 23 { // Minimum: 1+8+8+1+1+1+2+1 = 23 bytes header
 		return "", fmt.Errorf("binary host sync message too short")
@@ -76,17 +76,28 @@ func decodeBinaryHostSync(data []byte) (roomID string, err error) {
 		return "", fmt.Errorf("not a host sync message")
 	}
 
-	// Skip to lengths: type(1) + timestamp(8) + sentAt(8) + state(1) + reason(1) = 19
-	offset := 19
-	roomIdLen := int(data[offset])
-	offset += 1 + 2 + 1 // Skip roomIdLen(1) + urlLen(2) + videoIdLen(1)
-
-	if offset+roomIdLen > len(data) {
-		return "", fmt.Errorf("invalid room ID length")
+	readRoomID := func(start int) (string, bool) {
+		if start+4 > len(data) {
+			return "", false
+		}
+		roomIdLen := int(data[start])
+		urlLen := int(binary.LittleEndian.Uint16(data[start+1:]))
+		videoIdLen := int(data[start+3])
+		stringsOffset := start + 4
+		if stringsOffset+roomIdLen+urlLen+videoIdLen != len(data) {
+			return "", false
+		}
+		return string(data[stringsOffset : stringsOffset+roomIdLen]), true
 	}
 
-	roomID = string(data[offset : offset+roomIdLen])
-	return roomID, nil
+	// Skip fixed fields: type(1) + timestamp(8) + sentAt(8) + state(1) + reason(1) = 19.
+	if roomID, ok := readRoomID(20); ok {
+		return roomID, nil
+	}
+	if roomID, ok := readRoomID(19); ok {
+		return roomID, nil
+	}
+	return "", fmt.Errorf("invalid room ID length")
 }
 
 // binaryHostSyncToSyncData converts binary host sync to SyncData struct for storage
@@ -118,23 +129,43 @@ func binaryHostSyncToSyncData(data []byte) *SyncData {
 	if int(reasonIdx) < len(reasons) {
 		reason = reasons[reasonIdx]
 	}
+	sources := []string{"", "url", "youtube", "file", "screen", "camera"}
+	source := ""
 
-	roomIdLen := int(data[offset])
-	offset++
-	urlLen := int(binary.LittleEndian.Uint16(data[offset:]))
-	offset += 2
-	videoIdLen := int(data[offset])
-	offset++
-
-	if offset+roomIdLen+urlLen+videoIdLen > len(data) {
-		return nil
+	readStrings := func(start int) (roomID string, url string, videoID string, ok bool) {
+		cursor := start
+		if cursor+4 > len(data) {
+			return "", "", "", false
+		}
+		roomIdLen := int(data[cursor])
+		cursor++
+		urlLen := int(binary.LittleEndian.Uint16(data[cursor:]))
+		cursor += 2
+		videoIdLen := int(data[cursor])
+		cursor++
+		if cursor+roomIdLen+urlLen+videoIdLen != len(data) {
+			return "", "", "", false
+		}
+		roomID = string(data[cursor : cursor+roomIdLen])
+		cursor += roomIdLen
+		url = string(data[cursor : cursor+urlLen])
+		cursor += urlLen
+		videoID = string(data[cursor : cursor+videoIdLen])
+		return roomID, url, videoID, true
 	}
 
-	roomID := string(data[offset : offset+roomIdLen])
-	offset += roomIdLen
-	url := string(data[offset : offset+urlLen])
-	offset += urlLen
-	videoID := string(data[offset : offset+videoIdLen])
+	roomID, url, videoID, ok := readStrings(offset + 1)
+	if ok {
+		sourceIdx := int(data[offset])
+		if sourceIdx < len(sources) {
+			source = sources[sourceIdx]
+		}
+	} else {
+		roomID, url, videoID, ok = readStrings(offset)
+		if !ok {
+			return nil
+		}
+	}
 
 	return &SyncData{
 		Timestamp: timestamp,
@@ -144,6 +175,7 @@ func binaryHostSyncToSyncData(data []byte) *SyncData {
 		VideoID:   videoID,
 		SentAt:    sentAt,
 		Reason:    reason,
+		Source:    source,
 	}
 }
 
