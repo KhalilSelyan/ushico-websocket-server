@@ -10,7 +10,8 @@
         "state": "playing|paused",
         "videoId": "string",
         "sentAt": "number",
-        "reason": "tick|play|pause|seek|load|resync|ended"
+        "reason": "tick|play|pause|seek|load|resync|ended",
+        "source": "url|youtube|file|screen|camera optional"
       }
     },
     "room_video_state": {

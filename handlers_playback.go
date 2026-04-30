@@ -38,8 +38,11 @@ func handleHostSync(client *Client, message Message) {
 		"tick": true, "play": true, "pause": true, "seek": true,
 		"load": true, "resync": true, "ended": true,
 	}
+	validPlaybackSources := map[string]bool{
+		"": true, "url": true, "youtube": true, "file": true, "screen": true, "camera": true,
+	}
 
-	if !validPlaybackStates[syncData.State] || !validPlaybackReasons[syncData.Reason] {
+	if !validPlaybackStates[syncData.State] || !validPlaybackReasons[syncData.Reason] || !validPlaybackSources[syncData.Source] {
 		sendErrorResponse(client, "INVALID_DATA", "Invalid playback sync state")
 		return
 	}
@@ -52,6 +55,7 @@ func handleHostSync(client *Client, message Message) {
 		"userId":    client.userID,
 		"state":     syncData.State,
 		"reason":    syncData.Reason,
+		"source":    syncData.Source,
 		"timestamp": syncData.Timestamp,
 		"videoId":   syncData.VideoID,
 	})

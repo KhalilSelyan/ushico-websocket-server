@@ -20,6 +20,7 @@ type SyncData struct {
 	VideoID   string  `json:"videoId"`
 	SentAt    int64   `json:"sentAt"`
 	Reason    string  `json:"reason"`
+	Source    string  `json:"source,omitempty"`
 }
 
 // ErrorResponse for client errors.
