@@ -387,6 +387,32 @@ func TestBinaryHostSyncDecodesSourceMetadata(t *testing.T) {
 	}
 }
 
+func TestPlaybackSyncPermissionFollowsActiveMediaOwner(t *testing.T) {
+	resetStreamTestGlobals()
+	room := &Room{
+		ID:                "room-1",
+		HostID:            "host",
+		Participants:      map[string]string{"host": "host", "streamer": "viewer", "viewer": "viewer"},
+		Presence:          map[string]string{},
+		IsActive:          true,
+		CurrentStreamerID: "streamer",
+		CurrentStreamMode: "file",
+	}
+	roomMutex.Lock()
+	rooms[room.ID] = room
+	roomMutex.Unlock()
+
+	if err := validatePlaybackSyncPermission("room-1", "streamer"); err != nil {
+		t.Fatalf("streamer denied: %v", err)
+	}
+	if err := validatePlaybackSyncPermission("room-1", "host"); err != nil {
+		t.Fatalf("host denied: %v", err)
+	}
+	if err := validatePlaybackSyncPermission("room-1", "viewer"); err == nil {
+		t.Fatal("viewer allowed to sync active media")
+	}
+}
+
 func TestDisconnectCleanupIsIdempotent(t *testing.T) {
 	resetStreamTestGlobals()
 	client := &Client{

@@ -44,6 +44,28 @@ func validateHostPermission(roomID, userID string, action string) error {
 	return nil
 }
 
+func validatePlaybackSyncPermission(roomID, userID string) error {
+	roomMutex.RLock()
+	room, exists := rooms[roomID]
+	if !exists {
+		roomMutex.RUnlock()
+		return fmt.Errorf("room not found")
+	}
+	currentStreamerID := room.CurrentStreamerID
+	role := room.Participants[userID]
+	roomHostID := room.HostID
+	roomMutex.RUnlock()
+
+	if currentStreamerID != "" {
+		if currentStreamerID == userID || roomHostID == userID || role == "host" || role == "co-host" {
+			return nil
+		}
+		return fmt.Errorf("permission denied: only active media owner can sync playback")
+	}
+
+	return nil
+}
+
 func validateRoomMembership(client *Client, roomID string) error {
 	if !client.isInRoom(roomID) {
 		return fmt.Errorf("permission denied: join room before sending room events")

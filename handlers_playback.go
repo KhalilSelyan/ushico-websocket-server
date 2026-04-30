@@ -20,9 +20,9 @@ func handleHostSync(client *Client, message Message) {
 		return
 	}
 
-	if err := validateHostPermission(roomID, client.userID, "control video playback"); err != nil {
+	if err := validatePlaybackSyncPermission(roomID, client.userID); err != nil {
 		log.Printf("Permission denied for user %s in room %s: %v", client.userID, roomID, err)
-		sendErrorResponse(client, "PERMISSION_DENIED", "Only host can control video playback")
+		sendErrorResponse(client, "PERMISSION_DENIED", "Only active media owner can control video playback")
 		return
 	}
 
